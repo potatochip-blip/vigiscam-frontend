@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+.next/
+out/
+dist/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Environment — NEVER commit real env files
+.env
+.env.local
+.env.*.local
+
+# Vercel
+.vercel/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Generated type artifacts (regenerated from backend OpenAPI spec)
+lib/generated/api-types.ts
+openapi.json
+
+# v0 sandbox internals — never useful in a real repo
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+next.user-config.*
+
+# Logs
+*.log
+logs/
