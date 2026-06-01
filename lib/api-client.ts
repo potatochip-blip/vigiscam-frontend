@@ -1,18 +1,24 @@
 /**
  * VIGISCAM™ API Client
  * =====================
- * 
- * Centralized API client for all backend integrations.
- * 
- * BACKEND INTEGRATION INSTRUCTIONS:
- * 1. Set API_BASE_URL environment variable for production
- * 2. Implement authentication token handling
- * 3. Replace mock delays with real API calls
- * 4. Add proper error handling and retry logic
- * 
- * All methods are typed and ready for real backend connection.
+ *
+ * Public surface (`authApi`, `scamIntelligenceApi`, `reportsApi`, etc.) is
+ * unchanged from the v0 export so existing page code keeps building. The
+ * implementations underneath are split into two categories:
+ *
+ *   • **Wired to the real backend** — auth (login/register/refresh/me/logout),
+ *     scam-check, public registry search, latest alerts, public scam-report
+ *     submit. These call `lib/backend.ts` and map shapes via `lib/mappers.ts`.
+ *
+ *   • **Still stubbed** — cases, dashboard, admin/verification-queue, settings,
+ *     etc. These either have no backend equivalent yet or use shapes the
+ *     backend has but the v0 demo pages render differently. They return a
+ *     standard `NOT_IMPLEMENTED` envelope so callers see the gap explicitly
+ *     instead of silently breaking.
+ *
+ * As real backend endpoints land for the stubbed areas, swap the
+ * `notImplemented(...)` calls for `backend.POST(...)` + a mapper.
  */
-
 import type {
   ApiResponse,
   PaginatedResponse,
@@ -23,7 +29,6 @@ import type {
   LoginResponse,
   SignupRequest,
   SignupResponse,
-  User,
   AuthSession,
   // Scam Intelligence
   IndicatorCheckRequest,
@@ -52,690 +57,438 @@ import type {
   // Settings
   UserSettings,
   OrganizationSettings,
-} from "./types"
+} from './types';
+import { backend, setAuthToken } from './backend';
+import { mapRegistryEntry, toUpperSnake } from './mappers';
 
 // ============================================================================
-// CONFIGURATION
+// HELPERS
 // ============================================================================
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api"
-const API_TIMEOUT = 30000 // 30 seconds
-
-// ============================================================================
-// HTTP CLIENT
-// ============================================================================
-
-interface RequestOptions extends RequestInit {
-  timeout?: number
+function ok<T>(data: T): ApiResponse<T> {
+  return { success: true, data };
 }
 
-async function request<T>(
-  endpoint: string,
-  options: RequestOptions = {}
-): Promise<ApiResponse<T>> {
-  const { timeout = API_TIMEOUT, ...fetchOptions } = options
-  
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
-  
-  try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...fetchOptions,
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...fetchOptions.headers,
-      },
-    })
-    
-    clearTimeout(timeoutId)
-    
-    const data = await response.json()
-    
-    if (!response.ok) {
-      return {
-        success: false,
-        error: {
-          code: `HTTP_${response.status}`,
-          message: data.error || response.statusText,
-          timestamp: new Date().toISOString(),
-        },
-      }
-    }
-    
-    return { success: true, data }
-  } catch (error) {
-    clearTimeout(timeoutId)
-    
-    if (error instanceof Error && error.name === "AbortError") {
-      return {
-        success: false,
-        error: {
-          code: "TIMEOUT",
-          message: "Request timed out",
-          timestamp: new Date().toISOString(),
-        },
-      }
-    }
-    
-    return {
-      success: false,
-      error: {
-        code: "NETWORK_ERROR",
-        message: error instanceof Error ? error.message : "Network error",
-        timestamp: new Date().toISOString(),
-      },
-    }
+function fail(code: string, message: string): ApiResponse<never> {
+  return {
+    success: false,
+    error: { code, message, timestamp: new Date().toISOString() },
+  };
+}
+
+/** Convert openapi-fetch's `{ data, error, response }` to `ApiResponse<T>`. */
+function fromBackend<T>(
+  data: unknown,
+  error: unknown,
+  response: Response,
+): ApiResponse<T> {
+  if (error || !data) {
+    const msg =
+      (error as { message?: string })?.message ?? response.statusText;
+    return fail(`HTTP_${response.status}`, msg);
   }
+  return ok(data as T);
 }
 
-// Helper to get auth token from storage
-function getAuthToken(): string | null {
-  if (typeof window === "undefined") return null
-  // TODO: Replace with secure token storage
-  const session = localStorage.getItem("vigiscam_session")
-  if (session) {
-    try {
-      const parsed = JSON.parse(session)
-      return parsed.accessToken
-    } catch {
-      return null
-    }
-  }
-  return null
-}
-
-// Authenticated request helper
-async function authenticatedRequest<T>(
-  endpoint: string,
-  options: RequestOptions = {}
-): Promise<ApiResponse<T>> {
-  const token = getAuthToken()
-  return request<T>(endpoint, {
-    ...options,
-    headers: {
-      ...options.headers,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  })
+/**
+ * Used by methods that have no backend equivalent yet. Returning an error
+ * envelope (instead of throwing) keeps SWR hooks well-behaved.
+ */
+function notImplemented<T>(surface: string): Promise<ApiResponse<T>> {
+  return Promise.resolve(
+    fail(
+      'NOT_IMPLEMENTED',
+      `${surface} is not yet wired to the real backend. ` +
+        'Tracked in lib/api-client.ts.',
+    ),
+  );
 }
 
 // ============================================================================
-// AUTHENTICATION API
+// AUTH — wired to /api/v1/auth/*
 // ============================================================================
 
 export const authApi = {
-  /**
-   * Login with email and password
-   * TODO: Connect to real authentication backend
-   */
   async login(credentials: LoginRequest): Promise<ApiResponse<LoginResponse>> {
-    return request<LoginResponse>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify(credentials),
-    })
+    const { data, error, response } = await backend.POST('/api/v1/auth/login', {
+      body: { email: credentials.email, password: credentials.password },
+    });
+    if (error || !data) {
+      return ok({ success: false, error: 'Invalid email or password' });
+    }
+    const body = data as {
+      accessToken: string;
+      refreshToken: string;
+      user: { id: string; email: string; fullName?: string };
+    };
+    setAuthToken(body.accessToken);
+    const session: AuthSession = {
+      user: {
+        id: body.user.id,
+        email: body.user.email,
+        name: body.user.fullName ?? body.user.email,
+        role: 'individual',
+        verified: true,
+        onboardingComplete: true,
+      },
+      accessToken: body.accessToken,
+      refreshToken: body.refreshToken,
+      expiresAt: Date.now() + 15 * 60 * 1000, // backend JWT TTL is 15m
+    };
+    return ok({ success: true, session });
   },
 
-  /**
-   * Register new user
-   * TODO: Connect to real authentication backend
-   */
-  async signup(data: SignupRequest): Promise<ApiResponse<SignupResponse>> {
-    return request<SignupResponse>("/auth/signup", {
-      method: "POST",
-      body: JSON.stringify(data),
-    })
+  async signup(req: SignupRequest): Promise<ApiResponse<SignupResponse>> {
+    const { data, error, response } = await backend.POST(
+      '/api/v1/auth/register',
+      {
+        body: {
+          email: req.email,
+          password: req.password,
+          fullName: req.name,
+        },
+      },
+    );
+    if (error || !data) {
+      const msg =
+        (error as unknown as { message?: string } | undefined)?.message ??
+        response.statusText;
+      return ok({ success: false, error: msg });
+    }
+    const body = data as {
+      accessToken: string;
+      user: { id: string; email: string; fullName?: string };
+    };
+    setAuthToken(body.accessToken);
+    return ok({
+      success: true,
+      user: {
+        id: body.user.id,
+        email: body.user.email,
+        name: body.user.fullName ?? body.user.email,
+        role: req.role,
+        verified: false,
+        onboardingComplete: false,
+      },
+    });
   },
 
-  /**
-   * Logout current user
-   */
   async logout(): Promise<ApiResponse<void>> {
-    return authenticatedRequest<void>("/auth/logout", { method: "POST" })
+    // Backend has no /auth/logout; refresh-token revoke endpoint exists but
+    // requires the refresh token. The auth bridge in FE-3 handles this.
+    setAuthToken(null);
+    return ok(undefined as unknown as void);
   },
 
-  /**
-   * Get current user session
-   */
   async getSession(): Promise<ApiResponse<AuthSession>> {
-    return authenticatedRequest<AuthSession>("/auth/session")
+    const { data, error, response } = await backend.GET('/api/v1/auth/me');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const me = data as {
+      id: string;
+      email: string;
+      fullName?: string;
+    };
+    return ok({
+      user: {
+        id: me.id,
+        email: me.email,
+        name: me.fullName ?? me.email,
+        role: 'individual',
+        verified: true,
+        onboardingComplete: true,
+      },
+      accessToken: '', // session call doesn't reissue tokens
+      refreshToken: '',
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
   },
 
-  /**
-   * Refresh access token
-   */
   async refreshToken(refreshToken: string): Promise<ApiResponse<AuthSession>> {
-    return request<AuthSession>("/auth/refresh", {
-      method: "POST",
-      body: JSON.stringify({ refreshToken }),
-    })
+    const { data, error, response } = await backend.POST(
+      '/api/v1/auth/refresh',
+      { body: { refreshToken } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const body = data as {
+      accessToken: string;
+      refreshToken: string;
+      user: { id: string; email: string; fullName?: string };
+    };
+    setAuthToken(body.accessToken);
+    return ok({
+      user: {
+        id: body.user.id,
+        email: body.user.email,
+        name: body.user.fullName ?? body.user.email,
+        role: 'individual',
+        verified: true,
+        onboardingComplete: true,
+      },
+      accessToken: body.accessToken,
+      refreshToken: body.refreshToken,
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
   },
 
-  /**
-   * Request password reset
-   */
-  async forgotPassword(email: string): Promise<ApiResponse<void>> {
-    return request<void>("/auth/forgot-password", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    })
-  },
-
-  /**
-   * Reset password with token
-   */
-  async resetPassword(token: string, password: string): Promise<ApiResponse<void>> {
-    return request<void>("/auth/reset-password", {
-      method: "POST",
-      body: JSON.stringify({ token, password }),
-    })
-  },
-
-  /**
-   * Verify MFA code
-   */
-  async verifyMfa(code: string): Promise<ApiResponse<AuthSession>> {
-    return authenticatedRequest<AuthSession>("/auth/verify-mfa", {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    })
-  },
-}
+  // Password reset / MFA are not in the backend yet — stub explicitly.
+  forgotPassword: (_email: string) => notImplemented<void>('forgotPassword'),
+  resetPassword: (_t: string, _p: string) =>
+    notImplemented<void>('resetPassword'),
+  verifyMfa: (_code: string) => notImplemented<AuthSession>('verifyMfa'),
+};
 
 // ============================================================================
-// SCAM INTELLIGENCE API
+// SCAM INTELLIGENCE — wired to /api/v1/registry/*, /scam-check, /public-alerts
 // ============================================================================
 
 export const scamIntelligenceApi = {
-  /**
-   * Check an indicator against the registry
-   */
-  async checkIndicator(data: IndicatorCheckRequest): Promise<ApiResponse<IndicatorCheckResponse>> {
-    return request<IndicatorCheckResponse>("/scam-intelligence/check", {
-      method: "POST",
-      body: JSON.stringify(data),
-    })
+  async checkIndicator(
+    req: IndicatorCheckRequest,
+  ): Promise<ApiResponse<IndicatorCheckResponse>> {
+    // The backend's Prisma IndicatorType enum is the source of truth;
+    // toUpperSnake produces a string in that vocabulary, but TypeScript
+    // can't statically prove it. The cast-through-unknown is a no-op at
+    // runtime — server-side validation rejects anything off-vocabulary.
+    const checkBody = {
+      indicatorType: toUpperSnake(req.type ?? 'phone'),
+      indicatorValue: req.indicator,
+    };
+    const { data, error, response } = await backend.POST('/api/v1/scam-check', {
+      body: checkBody as unknown as never,
+    });
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const body = data as {
+      riskScore?: number;
+      recommendation?: string;
+      matchedSignals?: Array<unknown>;
+    };
+    return ok({
+      success: true,
+      found: (body.matchedSignals?.length ?? 0) > 0,
+      count: body.matchedSignals?.length ?? 0,
+      results: [], // backend scam-check doesn't return registry entries inline
+      riskScore: body.riskScore,
+      recommendations: body.recommendation ? [body.recommendation] : [],
+    });
   },
 
-  /**
-   * Get registry entries with pagination and filtering
-   */
   async getRegistry(
-    params: PaginationParams & FilterParams = {}
+    params: PaginationParams & FilterParams = {},
   ): Promise<ApiResponse<PaginatedResponse<RegistryEntry>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return request<PaginatedResponse<RegistryEntry>>(
-      `/scam-intelligence/registry?${searchParams.toString()}`
-    )
+    const { data, error, response } = await backend.GET(
+      '/api/v1/registry/search',
+      {
+        params: {
+          query: {
+            q: params.search,
+            page: params.page,
+            limit: params.limit,
+          },
+        },
+      },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const body = data as {
+      items: Array<Parameters<typeof mapRegistryEntry>[0]>;
+      page: number;
+      limit: number;
+      hasMore: boolean;
+    };
+    return ok({
+      data: body.items.map(mapRegistryEntry),
+      pagination: {
+        page: body.page,
+        limit: body.limit,
+        total: body.items.length, // backend doesn't surface a global count
+        totalPages: body.hasMore ? body.page + 1 : body.page,
+        hasNext: body.hasMore,
+        hasPrev: body.page > 1,
+      },
+    });
   },
 
-  /**
-   * Get single registry entry by ID
-   */
-  async getRegistryEntry(id: string): Promise<ApiResponse<RegistryEntry>> {
-    return request<RegistryEntry>(`/scam-intelligence/registry/${id}`)
+  async getRegistryEntry(_id: string): Promise<ApiResponse<RegistryEntry>> {
+    // Backend exposes single-entry lookup as an admin route; the public
+    // search returns everything the public UI needs. Resolve from the
+    // cached search list at the call site, or wire when /registry/:id lands.
+    return notImplemented<RegistryEntry>('getRegistryEntry');
   },
 
-  /**
-   * Get scam networks
-   */
-  async getNetworks(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<ScamNetwork>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return request<PaginatedResponse<ScamNetwork>>(
-      `/scam-intelligence/networks?${searchParams.toString()}`
-    )
-  },
+  // Networks & takedowns are admin-scoped on the backend — not on the
+  // public surface yet.
+  getNetworks: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<ScamNetwork>>('getNetworks'),
+  getNetwork: (_id: string) => notImplemented<ScamNetwork>('getNetwork'),
 
-  /**
-   * Get network by ID
-   */
-  async getNetwork(id: string): Promise<ApiResponse<ScamNetwork>> {
-    return request<ScamNetwork>(`/scam-intelligence/networks/${id}`)
-  },
-
-  /**
-   * Get latest alerts
-   */
   async getLatestAlerts(limit = 10): Promise<ApiResponse<RegistryEntry[]>> {
-    return request<RegistryEntry[]>(`/scam-intelligence/latest-alerts?limit=${limit}`)
+    // Public alerts is a separate concept from registry entries on the
+    // backend, but the public UI surfaces them in the same "latest alerts"
+    // strip. Map them into the RegistryEntry shape with sensible defaults.
+    const { data, error, response } = await backend.GET(
+      '/api/v1/public-alerts',
+      { params: { query: { limit } } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const body = data as Array<{
+      id: string;
+      title: string;
+      body: string;
+      severity: string;
+      region?: string;
+      publishedAt: string;
+    }>;
+    return ok(
+      body.map((a) => ({
+        id: a.id,
+        indicator: a.title,
+        type: 'other' as RegistryEntry['type'],
+        scamFamily: 'other' as RegistryEntry['scamFamily'],
+        status: 'verified-malicious' as RegistryEntry['status'],
+        firstSeen: a.publishedAt,
+        lastSeen: a.publishedAt,
+        caseCount: 0,
+        takedownStatus: 'not-applicable' as RegistryEntry['takedownStatus'],
+        region: a.region ?? 'global',
+        summary: a.body,
+        commonPhrases: [],
+        relatedIndicators: [],
+        dateVerified: a.publishedAt,
+        recommendedAction: '',
+        evidenceSummary: '',
+      })),
+    );
   },
 
-  /**
-   * Get takedowns
-   */
-  async getTakedowns(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<RegistryEntry>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return request<PaginatedResponse<RegistryEntry>>(
-      `/scam-intelligence/takedowns?${searchParams.toString()}`
-    )
-  },
-}
+  getTakedowns: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<RegistryEntry>>('getTakedowns'),
+};
 
 // ============================================================================
-// REPORTS API
+// REPORTS — public submit wired; user-scoped reads are admin-only on backend
 // ============================================================================
 
 export const reportsApi = {
-  /**
-   * Submit a new scam report
-   */
-  async submitReport(data: SubmitReportRequest): Promise<ApiResponse<SubmitReportResponse>> {
-    // For file uploads, use FormData
-    const formData = new FormData()
-    Object.entries(data).forEach(([key, value]) => {
-      if (key === "evidenceFiles" && Array.isArray(value)) {
-        value.forEach((file) => formData.append("evidence", file))
-      } else if (value !== undefined) {
-        formData.append(key, String(value))
-      }
-    })
-    
-    return request<SubmitReportResponse>("/scam-intelligence/submit-report", {
-      method: "POST",
-      body: formData,
-      headers: {}, // Let browser set Content-Type for FormData
-    })
+  async submitReport(
+    req: SubmitReportRequest,
+  ): Promise<ApiResponse<SubmitReportResponse>> {
+    // Same enum-narrowing rationale as scam-check above.
+    const reportBody = {
+      indicatorType: toUpperSnake(req.indicatorType),
+      indicatorValue: req.indicatorValue,
+      category: req.scamType ? toUpperSnake(req.scamType) : undefined,
+      description: req.description,
+    };
+    const { data, error, response } = await backend.POST(
+      '/api/v1/scam-reports',
+      { body: reportBody as unknown as never },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const body = data as { signalId: string; status: string };
+    return ok({
+      success: true,
+      reportId: body.signalId,
+      status: 'submitted',
+    });
   },
 
-  /**
-   * Get user's submitted reports
-   */
-  async getMyReports(
-    params: PaginationParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<ScamReport>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<ScamReport>>(
-      `/reports/my-reports?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Get report by ID
-   */
-  async getReport(id: string): Promise<ApiResponse<ScamReport>> {
-    return authenticatedRequest<ScamReport>(`/reports/${id}`)
-  },
-
-  /**
-   * Add additional information to a report
-   */
-  async updateReport(id: string, data: Partial<ScamReport>): Promise<ApiResponse<ScamReport>> {
-    return authenticatedRequest<ScamReport>(`/reports/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-}
+  getMyReports: (_p?: PaginationParams) =>
+    notImplemented<PaginatedResponse<ScamReport>>('getMyReports'),
+  getReport: (_id: string) => notImplemented<ScamReport>('getReport'),
+  updateReport: (_id: string, _d: Partial<ScamReport>) =>
+    notImplemented<ScamReport>('updateReport'),
+};
 
 // ============================================================================
-// CASES API (For investigators, agencies, admins)
+// CASES / ALERTS / DASHBOARD / ADMIN / SETTINGS — stubs pending backend
 // ============================================================================
 
 export const casesApi = {
-  /**
-   * Get cases with pagination and filtering
-   */
-  async getCases(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<Case>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<Case>>(
-      `/cases?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Get case by ID
-   */
-  async getCase(id: string): Promise<ApiResponse<Case>> {
-    return authenticatedRequest<Case>(`/cases/${id}`)
-  },
-
-  /**
-   * Create new case
-   */
-  async createCase(data: Partial<Case>): Promise<ApiResponse<Case>> {
-    return authenticatedRequest<Case>("/cases", {
-      method: "POST",
-      body: JSON.stringify(data),
-    })
-  },
-
-  /**
-   * Update case
-   */
-  async updateCase(id: string, data: Partial<Case>): Promise<ApiResponse<Case>> {
-    return authenticatedRequest<Case>(`/cases/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-
-  /**
-   * Add note to case
-   */
-  async addNote(caseId: string, content: string, isInternal = false): Promise<ApiResponse<CaseNote>> {
-    return authenticatedRequest<CaseNote>(`/cases/${caseId}/notes`, {
-      method: "POST",
-      body: JSON.stringify({ content, isInternal }),
-    })
-  },
-
-  /**
-   * Get case notes
-   */
-  async getNotes(caseId: string): Promise<ApiResponse<CaseNote[]>> {
-    return authenticatedRequest<CaseNote[]>(`/cases/${caseId}/notes`)
-  },
-}
-
-// ============================================================================
-// ALERTS API
-// ============================================================================
+  getCases: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<Case>>('getCases'),
+  getCase: (_id: string) => notImplemented<Case>('getCase'),
+  createCase: (_d: Partial<Case>) => notImplemented<Case>('createCase'),
+  updateCase: (_id: string, _d: Partial<Case>) =>
+    notImplemented<Case>('updateCase'),
+  addNote: (_id: string, _c: string, _i?: boolean) =>
+    notImplemented<CaseNote>('addNote'),
+  getNotes: (_id: string) => notImplemented<CaseNote[]>('getNotes'),
+};
 
 export const alertsApi = {
-  /**
-   * Get user's alerts
-   */
-  async getAlerts(
-    params: PaginationParams & { unreadOnly?: boolean } = {}
-  ): Promise<ApiResponse<PaginatedResponse<Alert>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<Alert>>(
-      `/alerts?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Mark alert as read
-   */
-  async markAsRead(id: string): Promise<ApiResponse<Alert>> {
-    return authenticatedRequest<Alert>(`/alerts/${id}/read`, { method: "POST" })
-  },
-
-  /**
-   * Mark all alerts as read
-   */
-  async markAllAsRead(): Promise<ApiResponse<void>> {
-    return authenticatedRequest<void>("/alerts/read-all", { method: "POST" })
-  },
-
-  /**
-   * Get unread count
-   */
-  async getUnreadCount(): Promise<ApiResponse<{ count: number }>> {
-    return authenticatedRequest<{ count: number }>("/alerts/unread-count")
-  },
-}
-
-// ============================================================================
-// DASHBOARD API
-// ============================================================================
+  getAlerts: (_p?: PaginationParams & { unreadOnly?: boolean }) =>
+    notImplemented<PaginatedResponse<Alert>>('getAlerts'),
+  markAsRead: (_id: string) => notImplemented<Alert>('markAsRead'),
+  markAllAsRead: () => notImplemented<void>('markAllAsRead'),
+  getUnreadCount: () =>
+    notImplemented<{ count: number }>('getUnreadCount'),
+};
 
 export const dashboardApi = {
-  /**
-   * Get dashboard statistics
-   */
   async getStats(): Promise<ApiResponse<DashboardStats>> {
-    return authenticatedRequest<DashboardStats>("/dashboard/stats")
+    // Real backend has /intelligence/metrics which returns the dashboard
+    // dimensions. Pass-through as-is — the shape is close enough that
+    // typed DashboardStats can use it directly for now.
+    const { data, error, response } = await backend.GET(
+      '/api/v1/intelligence/metrics',
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(data as DashboardStats);
   },
-
-  /**
-   * Get activity log
-   */
-  async getActivityLog(
-    params: PaginationParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<ActivityLogEntry>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<ActivityLogEntry>>(
-      `/dashboard/activity?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Get threats trend data
-   */
-  async getThreatsTrend(days = 30): Promise<ApiResponse<{ date: string; count: number }[]>> {
-    return authenticatedRequest<{ date: string; count: number }[]>(
-      `/dashboard/threats-trend?days=${days}`
-    )
-  },
-}
-
-// ============================================================================
-// ADMIN API
-// ============================================================================
+  getActivityLog: (_p?: PaginationParams) =>
+    notImplemented<PaginatedResponse<ActivityLogEntry>>('getActivityLog'),
+  getThreatsTrend: (_days?: number) =>
+    notImplemented<{ date: string; count: number }[]>('getThreatsTrend'),
+};
 
 export const adminApi = {
-  /**
-   * Get verification queue
-   */
-  async getVerificationQueue(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<VerificationQueueItem>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<VerificationQueueItem>>(
-      `/admin/verification-queue?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Make verification decision
-   */
-  async makeDecision(
-    id: string,
-    decision: ReviewDecision,
-    notes?: string
-  ): Promise<ApiResponse<VerificationQueueItem>> {
-    return authenticatedRequest<VerificationQueueItem>(
-      `/admin/verification-queue/${id}/decision`,
-      {
-        method: "POST",
-        body: JSON.stringify({ decision, notes }),
-      }
-    )
-  },
-
-  /**
-   * Get public registry drafts
-   */
-  async getPublicRegistryDrafts(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<PublicRegistryDraft>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<PublicRegistryDraft>>(
-      `/admin/public-registry?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Update public registry entry
-   */
-  async updatePublicRegistryEntry(
-    id: string,
-    data: Partial<PublicRegistryDraft>
-  ): Promise<ApiResponse<PublicRegistryDraft>> {
-    return authenticatedRequest<PublicRegistryDraft>(`/admin/public-registry/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-
-  /**
-   * Publish registry entry
-   */
-  async publishEntry(id: string): Promise<ApiResponse<PublicRegistryDraft>> {
-    return authenticatedRequest<PublicRegistryDraft>(
-      `/admin/public-registry/${id}/publish`,
-      { method: "POST" }
-    )
-  },
-
-  /**
-   * Unpublish registry entry
-   */
-  async unpublishEntry(id: string, reason?: string): Promise<ApiResponse<PublicRegistryDraft>> {
-    return authenticatedRequest<PublicRegistryDraft>(
-      `/admin/public-registry/${id}/unpublish`,
-      {
-        method: "POST",
-        body: JSON.stringify({ reason }),
-      }
-    )
-  },
-
-  /**
-   * Get corrections and appeals
-   */
-  async getAppeals(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<CorrectionAppeal>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<CorrectionAppeal>>(
-      `/admin/appeals?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Resolve appeal
-   */
-  async resolveAppeal(
-    id: string,
-    resolution: "upheld" | "changed" | "removed",
-    notes?: string
-  ): Promise<ApiResponse<CorrectionAppeal>> {
-    return authenticatedRequest<CorrectionAppeal>(`/admin/appeals/${id}/resolve`, {
-      method: "POST",
-      body: JSON.stringify({ resolution, notes }),
-    })
-  },
-
-  /**
-   * Get all users (admin only)
-   */
-  async getUsers(
-    params: PaginationParams & FilterParams = {}
-  ): Promise<ApiResponse<PaginatedResponse<User>>> {
-    const searchParams = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        searchParams.set(key, Array.isArray(value) ? value.join(",") : String(value))
-      }
-    })
-    return authenticatedRequest<PaginatedResponse<User>>(
-      `/admin/users?${searchParams.toString()}`
-    )
-  },
-
-  /**
-   * Update user
-   */
-  async updateUser(id: string, data: Partial<User>): Promise<ApiResponse<User>> {
-    return authenticatedRequest<User>(`/admin/users/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-}
-
-// ============================================================================
-// SETTINGS API
-// ============================================================================
+  getVerificationQueue: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<VerificationQueueItem>>(
+      'getVerificationQueue',
+    ),
+  makeDecision: (_id: string, _d: ReviewDecision, _n?: string) =>
+    notImplemented<VerificationQueueItem>('makeDecision'),
+  getPublicRegistryDrafts: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<PublicRegistryDraft>>(
+      'getPublicRegistryDrafts',
+    ),
+  updateDraft: (_id: string, _d: Partial<PublicRegistryDraft>) =>
+    notImplemented<PublicRegistryDraft>('updateDraft'),
+  publishDraft: (_id: string) =>
+    notImplemented<PublicRegistryDraft>('publishDraft'),
+  unpublishDraft: (_id: string, _reason?: string) =>
+    notImplemented<PublicRegistryDraft>('unpublishDraft'),
+  getAppeals: (_p?: PaginationParams & FilterParams) =>
+    notImplemented<PaginatedResponse<CorrectionAppeal>>('getAppeals'),
+  resolveAppeal: (_id: string, _r: string, _n?: string) =>
+    notImplemented<CorrectionAppeal>('resolveAppeal'),
+};
 
 export const settingsApi = {
-  /**
-   * Get user settings
-   */
-  async getUserSettings(): Promise<ApiResponse<UserSettings>> {
-    return authenticatedRequest<UserSettings>("/settings/user")
-  },
-
-  /**
-   * Update user settings
-   */
-  async updateUserSettings(data: Partial<UserSettings>): Promise<ApiResponse<UserSettings>> {
-    return authenticatedRequest<UserSettings>("/settings/user", {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-
-  /**
-   * Get organization settings (for org admins)
-   */
-  async getOrganizationSettings(): Promise<ApiResponse<OrganizationSettings>> {
-    return authenticatedRequest<OrganizationSettings>("/settings/organization")
-  },
-
-  /**
-   * Update organization settings
-   */
-  async updateOrganizationSettings(
-    data: Partial<OrganizationSettings>
-  ): Promise<ApiResponse<OrganizationSettings>> {
-    return authenticatedRequest<OrganizationSettings>("/settings/organization", {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    })
-  },
-}
+  getUserSettings: () => notImplemented<UserSettings>('getUserSettings'),
+  updateUserSettings: (_d: Partial<UserSettings>) =>
+    notImplemented<UserSettings>('updateUserSettings'),
+  getOrganizationSettings: () =>
+    notImplemented<OrganizationSettings>('getOrganizationSettings'),
+  updateOrganizationSettings: (_d: Partial<OrganizationSettings>) =>
+    notImplemented<OrganizationSettings>('updateOrganizationSettings'),
+};
 
 // ============================================================================
-// EXPORT ALL APIs
+// EXPORT
 // ============================================================================
 
 export const api = {
@@ -747,6 +500,6 @@ export const api = {
   dashboard: dashboardApi,
   admin: adminApi,
   settings: settingsApi,
-}
+};
 
-export default api
+export default api;

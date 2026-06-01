@@ -57,81 +57,60 @@ const SWR_CONFIG = {
 // ============================================================================
 
 /**
- * Hook to check an indicator against the registry
+ * Hook to check an indicator against the registry. Wired to the real
+ * backend's /api/v1/scam-check endpoint.
  */
 export function useIndicatorCheck() {
   return useSWRMutation(
     "/api/scam-intelligence/check",
-    async (url, { arg }: { arg: { indicator: string } }) => {
-      // TODO: Replace with real API call
-      // const response = await api.scamIntelligence.checkIndicator(arg)
-      // return response.data
-      
-      // Mock implementation
-      await new Promise((resolve) => setTimeout(resolve, 800))
-      const results = mockRegistryEntries.filter((entry) =>
-        entry.indicator.toLowerCase().includes(arg.indicator.toLowerCase())
-      )
+    async (_url, { arg }: { arg: { indicator: string; type?: string } }) => {
+      const res = await api.scamIntelligence.checkIndicator({
+        indicator: arg.indicator,
+        type: arg.type as never,
+      })
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "scam-check failed")
+      }
       return {
-        found: results.length > 0,
-        count: results.length,
-        results,
+        found: res.data.found,
+        count: res.data.count,
+        results: res.data.results,
+        riskScore: res.data.riskScore,
+        recommendations: res.data.recommendations,
       }
     }
   )
 }
 
 /**
- * Hook to get registry entries
+ * Hook to get registry entries. Wired to the backend's public
+ * /api/v1/registry/search endpoint. The backend already supports `q`, `page`
+ * and `limit`; type/status filtering is applied client-side until those
+ * filters are added to the public search route.
  */
 export function useRegistry(params: PaginationParams & FilterParams = {}) {
   return useSWR(
     ["registry", params],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.scamIntelligence.getRegistry(params)
-      // return response.data
-      
-      // Mock implementation
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockRegistryEntries]
-      
-      // Apply search filter
-      if (params.search) {
-        const search = params.search.toLowerCase()
-        data = data.filter(
-          (entry) =>
-            entry.indicator.toLowerCase().includes(search) ||
-            entry.summary.toLowerCase().includes(search)
+      const res = await api.scamIntelligence.getRegistry(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "registry failed")
+      }
+      let { data, pagination } = res.data
+
+      // Backend's public search doesn't filter by indicator type or
+      // verification status — apply those client-side for now.
+      if (params.type?.length) {
+        data = data.filter((entry: RegistryEntry) =>
+          params.type?.includes(entry.type),
         )
       }
-      
-      // Apply type filter
-      if (params.type?.length) {
-        data = data.filter((entry) => params.type?.includes(entry.type))
-      }
-      
-      // Apply status filter
       if (params.status?.length) {
-        data = data.filter((entry) => params.status?.includes(entry.status))
+        data = data.filter((entry: RegistryEntry) =>
+          params.status?.includes(entry.status),
+        )
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      const paginatedData = data.slice(start, start + limit)
-      
-      return {
-        data: paginatedData,
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return { data, pagination }
     },
     SWR_CONFIG
   )
@@ -171,10 +150,12 @@ export function useNetworks(params: PaginationParams & FilterParams = {}) {
       
       if (params.search) {
         const search = params.search.toLowerCase()
-        data = data.filter(
-          (network) =>
-            network.name.toLowerCase().includes(search) ||
-            network.description.toLowerCase().includes(search)
+        // `mockNetworks` is the v0 demo's NetworkEntry shape, which only
+        // exposes `name`. The frontend's ScamNetwork type has a `description`
+        // field that the mock data set doesn't populate — skip that filter
+        // until the backend's networks endpoint lands and we map a real shape.
+        data = data.filter((network) =>
+          network.name.toLowerCase().includes(search),
         )
       }
       
@@ -199,20 +180,17 @@ export function useNetworks(params: PaginationParams & FilterParams = {}) {
 }
 
 /**
- * Hook to get latest alerts
+ * Hook to get the latest public alerts. Wired to /api/v1/public-alerts.
  */
 export function useLatestAlerts(limit = 10) {
   return useSWR(
     ["latest-alerts", limit],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.scamIntelligence.getLatestAlerts(limit)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      return mockRegistryEntries
-        .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
-        .slice(0, limit)
+      const res = await api.scamIntelligence.getLatestAlerts(limit)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "alerts failed")
+      }
+      return res.data
     },
     SWR_CONFIG
   )
