@@ -1,7 +1,8 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
-import { useRouter, usePathname } from "next/navigation"
+import { useRouter } from "next/navigation"
+import { setAuthToken } from "@/lib/backend"
 
 export type UserRole =
   | "individual"
@@ -18,6 +19,8 @@ export interface User {
   email: string
   name: string
   role: UserRole
+  /** The backend tenant this session is scoped to (FE-3). */
+  tenantId?: string
   organization?: string
   avatar?: string
   verified: boolean
@@ -143,82 +146,91 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
 
-  // Check for existing session on mount
+  // Restore the session on mount by re-minting an access token from the
+  // httpOnly refresh cookie. Tokens are never read from localStorage — only
+  // the non-sensitive selected-role preference is.
   useEffect(() => {
-    const storedUser = localStorage.getItem("vigiscam_user")
     const storedRole = localStorage.getItem("vigiscam_selected_role")
-    
-    if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser))
-      } catch {
-        localStorage.removeItem("vigiscam_user")
-      }
-    }
-    
     if (storedRole) {
       setSelectedRole(storedRole as UserRole)
     }
-    
-    setIsLoading(false)
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/auth/refresh", { method: "POST" })
+        if (!cancelled && res.ok) {
+          const data = (await res.json()) as {
+            user: User
+            accessToken: string
+          }
+          setUser(data.user)
+          setAuthToken(data.accessToken)
+        } else if (!cancelled) {
+          setAuthToken(null)
+        }
+      } catch {
+        if (!cancelled) setAuthToken(null)
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true)
-    
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    
-    // For demo: use the selected role to determine which user to log in as
-    const role = selectedRole || "individual"
-    const demoUser = demoUsers[role]
-    
-    // Update demo user with provided email
-    const loggedInUser: User = {
-      ...demoUser,
-      email: email || demoUser.email,
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      })
+      if (!res.ok) return false
+      const data = (await res.json()) as { user: User; accessToken: string }
+      setUser(data.user)
+      setAuthToken(data.accessToken)
+      // The httpOnly refresh cookie + readable role cookie are set by the
+      // route handler — nothing token-related touches localStorage.
+      return true
+    } catch {
+      return false
+    } finally {
+      setIsLoading(false)
     }
-    
-    setUser(loggedInUser)
-    localStorage.setItem("vigiscam_user", JSON.stringify(loggedInUser))
-    // Mirror role to cookie so middleware can read it for SSR route guards
-    document.cookie = `vigiscam_role=${loggedInUser.role}; path=/; max-age=2592000; SameSite=Lax`
-    setIsLoading(false)
-    
-    return true
   }
 
   const signup = async (email: string, password: string, name: string): Promise<boolean> => {
     setIsLoading(true)
-    
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    
-    const role = selectedRole || "individual"
-    const newUser: User = {
-      id: `usr_${Date.now()}`,
-      email,
-      name,
-      role,
-      verified: false,
-      onboardingComplete: false,
+    try {
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, name }),
+      })
+      if (!res.ok) return false
+      const data = (await res.json()) as { user: User; accessToken: string }
+      setUser(data.user)
+      setAuthToken(data.accessToken)
+      return true
+    } catch {
+      return false
+    } finally {
+      setIsLoading(false)
     }
-    
-    setUser(newUser)
-    localStorage.setItem("vigiscam_user", JSON.stringify(newUser))
-    document.cookie = `vigiscam_role=${newUser.role}; path=/; max-age=2592000; SameSite=Lax`
-    setIsLoading(false)
-    
-    return true
   }
 
   const logout = () => {
+    // Fire-and-forget the server-side revocation + cookie clear, then reset
+    // local state immediately so the UI never blocks on the network.
+    void fetch("/api/auth/logout", { method: "POST" }).catch(() => {})
     setUser(null)
     setSelectedRole(null)
-    localStorage.removeItem("vigiscam_user")
+    setAuthToken(null)
     localStorage.removeItem("vigiscam_selected_role")
-    // Clear role cookie
-    document.cookie = "vigiscam_role=; path=/; max-age=0; SameSite=Lax"
     router.push("/login")
   }
 

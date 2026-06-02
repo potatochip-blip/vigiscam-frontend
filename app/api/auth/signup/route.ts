@@ -1,82 +1,83 @@
 /**
- * POST /api/auth/signup
- * 
- * Registers a new user account.
- * 
- * BACKEND INTEGRATION:
- * - Validate email uniqueness
- * - Hash password securely (bcrypt)
- * - Create user record in database
- * - Send verification email
- * - Return user data (without password)
+ * POST /api/auth/signup  (FE-3 auth bridge)
+ *
+ * Registers a new account against the VIGISCAM backend `/auth/register`,
+ * which creates the user + their personal tenant and returns the same
+ * AuthResult shape as login (already logged in). We set the same cookies
+ * as the login route so signup lands the user straight into the app.
  */
+import { NextResponse } from 'next/server';
+import {
+  REFRESH_COOKIE,
+  ROLE_COOKIE,
+  refreshCookieOptions,
+  roleCookieOptions,
+} from '@/lib/auth-cookies';
+import { toFrontendUser, type BackendAuthUser } from '@/lib/role-map';
 
-import { NextResponse } from "next/server"
+const API = process.env.NEXT_PUBLIC_API_URL;
+
+interface BackendAuthResult {
+  accessToken: string;
+  refreshToken: string;
+  user: BackendAuthUser;
+}
 
 export async function POST(request: Request) {
-  try {
-    const body = await request.json()
-    const { email, password, name, role = "individual", organization } = body
-
-    // Validate required fields
-    if (!email || !password || !name) {
-      return NextResponse.json(
-        { success: false, error: "Email, password, and name are required" },
-        { status: 400 }
-      )
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
-      return NextResponse.json(
-        { success: false, error: "Invalid email format" },
-        { status: 400 }
-      )
-    }
-
-    // Validate password strength
-    if (password.length < 8) {
-      return NextResponse.json(
-        { success: false, error: "Password must be at least 8 characters" },
-        { status: 400 }
-      )
-    }
-
-    // TODO: Replace with real user creation
-    // Example with Supabase:
-    // const { data, error } = await supabase.auth.signUp({ email, password })
-    // if (error) return NextResponse.json({ success: false, error: error.message }, { status: 400 })
-    // 
-    // await supabase.from('users').insert({
-    //   id: data.user.id,
-    //   email,
-    //   name,
-    //   role,
-    //   organization,
-    // })
-
-    // Mock successful signup for development
-    const mockUser = {
-      id: `usr_${Date.now()}`,
-      email,
-      name,
-      role,
-      organization,
-      verified: false,
-      onboardingComplete: false,
-    }
-
-    return NextResponse.json({
-      success: true,
-      user: mockUser,
-      verificationRequired: true,
-    })
-  } catch (error) {
-    console.error("Signup error:", error)
+  if (!API) {
     return NextResponse.json(
-      { success: false, error: "Internal server error" },
-      { status: 500 }
-    )
+      { success: false, error: 'Backend API URL is not configured' },
+      { status: 500 },
+    );
   }
+
+  let body: { email?: string; password?: string; name?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ success: false, error: 'Invalid request body' }, { status: 400 });
+  }
+  const { email, password, name } = body;
+  if (!email || !password || !name) {
+    return NextResponse.json(
+      { success: false, error: 'Email, password and name are required' },
+      { status: 400 },
+    );
+  }
+
+  let backendRes: Response;
+  try {
+    backendRes = await fetch(`${API}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, fullName: name }),
+    });
+  } catch {
+    return NextResponse.json(
+      { success: false, error: 'Could not reach the authentication service' },
+      { status: 502 },
+    );
+  }
+
+  if (!backendRes.ok) {
+    // 409 = email already registered; surface that distinctly.
+    if (backendRes.status === 409) {
+      return NextResponse.json(
+        { success: false, error: 'An account with this email already exists' },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json(
+      { success: false, error: 'Could not create the account' },
+      { status: backendRes.status >= 400 && backendRes.status < 500 ? 400 : 502 },
+    );
+  }
+
+  const data = (await backendRes.json()) as BackendAuthResult;
+  const user = toFrontendUser(data.user);
+
+  const response = NextResponse.json({ success: true, user, accessToken: data.accessToken });
+  response.cookies.set(REFRESH_COOKIE, data.refreshToken, refreshCookieOptions());
+  response.cookies.set(ROLE_COOKIE, user.role, roleCookieOptions());
+  return response;
 }
