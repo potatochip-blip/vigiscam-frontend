@@ -85,10 +85,13 @@ export function SignupForm() {
     setIsLoading(true)
 
     try {
-      const success = await signup(formData.email, formData.password, formData.name)
-      if (success) {
-        const dashboardPath = getDashboardPath(currentRole)
-        router.push(dashboardPath)
+      const account = await signup(formData.email, formData.password, formData.name)
+      if (account) {
+        // New accounts are provisioned with their real backend role — route
+        // by that, not by the role picked in the UI.
+        router.push(getDashboardPath(account.role))
+      } else {
+        setErrors({ submit: "Could not create the account. The email may already be registered." })
       }
     } catch {
       setErrors({ submit: "An error occurred. Please try again." })

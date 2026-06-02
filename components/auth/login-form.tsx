@@ -34,6 +34,7 @@ export function LoginForm() {
     remember: false,
   })
   const [error, setError] = useState("")
+  const [notice, setNotice] = useState("")
 
   const currentRole = selectedRole || "individual"
   const RoleIcon = roleInfo[currentRole].icon
@@ -41,16 +42,29 @@ export function LoginForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
+    setNotice("")
     setIsLoading(true)
 
     try {
-      const success = await login(formData.email, formData.password)
-      if (success) {
-        const dashboardPath = getDashboardPath(currentRole)
-        router.push(dashboardPath)
-      } else {
+      const account = await login(formData.email, formData.password)
+      if (!account) {
         setError("Invalid credentials. Please try again.")
+        return
       }
+
+      // Route by the account's REAL role — never the role picked in the UI.
+      // If the user explicitly picked a different portal, flag the mismatch
+      // before sending them to the dashboard their account actually grants.
+      if (selectedRole && selectedRole !== account.role) {
+        setNotice(
+          `This is a ${roleInfo[account.role].label} account, not ${roleInfo[selectedRole].label}. ` +
+            `Taking you to your ${roleInfo[account.role].label} dashboard.`,
+        )
+        setTimeout(() => router.push(getDashboardPath(account.role)), 1500)
+        return
+      }
+
+      router.push(getDashboardPath(account.role))
     } catch {
       setError("An error occurred. Please try again.")
     } finally {
@@ -82,6 +96,12 @@ export function LoginForm() {
         {error && (
           <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="p-3 rounded-lg bg-amber-100 border border-amber-200 text-amber-800 text-sm">
+            {notice}
           </div>
         )}
 

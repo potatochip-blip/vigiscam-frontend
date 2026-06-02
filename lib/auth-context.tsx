@@ -32,8 +32,10 @@ interface AuthContextType {
   selectedRole: UserRole | null
   isLoading: boolean
   isAuthenticated: boolean
-  login: (email: string, password: string) => Promise<boolean>
-  signup: (email: string, password: string, name: string) => Promise<boolean>
+  // Return the authenticated User on success (so callers can route by the
+  // account's REAL role), or null on failure.
+  login: (email: string, password: string) => Promise<User | null>
+  signup: (email: string, password: string, name: string) => Promise<User | null>
   logout: () => void
   setSelectedRole: (role: UserRole) => void
   switchDemoRole: (role: UserRole) => void
@@ -181,7 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const login = async (email: string, password: string): Promise<User | null> => {
     setIsLoading(true)
     try {
       const res = await fetch("/api/auth/login", {
@@ -189,21 +191,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       })
-      if (!res.ok) return false
+      if (!res.ok) return null
       const data = (await res.json()) as { user: User; accessToken: string }
       setUser(data.user)
       setAuthToken(data.accessToken)
       // The httpOnly refresh cookie + readable role cookie are set by the
       // route handler — nothing token-related touches localStorage.
-      return true
+      return data.user
     } catch {
-      return false
+      return null
     } finally {
       setIsLoading(false)
     }
   }
 
-  const signup = async (email: string, password: string, name: string): Promise<boolean> => {
+  const signup = async (email: string, password: string, name: string): Promise<User | null> => {
     setIsLoading(true)
     try {
       const res = await fetch("/api/auth/signup", {
@@ -211,13 +213,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, name }),
       })
-      if (!res.ok) return false
+      if (!res.ok) return null
       const data = (await res.json()) as { user: User; accessToken: string }
       setUser(data.user)
       setAuthToken(data.accessToken)
-      return true
+      return data.user
     } catch {
-      return false
+      return null
     } finally {
       setIsLoading(false)
     }
