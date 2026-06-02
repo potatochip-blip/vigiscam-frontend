@@ -1,34 +1,125 @@
 'use client'
 
-import { PageLayout } from "@/components/dashboard/page-layout"
-import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Archive, Download } from "lucide-react"
+import useSWR from 'swr'
+import { PageLayout } from '@/components/dashboard/page-layout'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { ShieldCheck, ShieldAlert, Loader2 } from 'lucide-react'
+import { backend } from '@/lib/backend'
+import { useAuth } from '@/lib/auth-context'
+
+interface EvidenceEvent {
+  id: string
+  eventType: string
+  eventDescription: string
+  eventHash: string
+  previousHash: string | null
+  occurredAt: string
+  entityType: string
+}
+interface ChainVerification {
+  intact: boolean
+  totalEvents: number
+  brokenAtSequence?: number
+  reason?: string
+}
+
+async function fetchTimeline(): Promise<EvidenceEvent[]> {
+  // entityType/entityId are optional on the backend (empty = no filter); the
+  // generated spec marks them required, so we pass empty strings.
+  const { data, error, response } = await backend.GET('/api/v1/evidence/timeline', {
+    params: { query: { entityType: '', entityId: '' } },
+  })
+  if (error || !response.ok) throw new Error(`Failed to load evidence (${response.status})`)
+  return (data as unknown as EvidenceEvent[]) ?? []
+}
+async function fetchVerify(): Promise<ChainVerification> {
+  const { data, error, response } = await backend.GET('/api/v1/evidence/verify')
+  if (error || !response.ok) throw new Error(`Failed to verify chain (${response.status})`)
+  return data as unknown as ChainVerification
+}
 
 export default function AdminEvidencePage() {
+  const { isAuthenticated } = useAuth()
+  const { data: timeline, error, isLoading } = useSWR(
+    isAuthenticated ? 'evidence-timeline' : null,
+    fetchTimeline,
+    { revalidateOnFocus: false },
+  )
+  const { data: verify } = useSWR(isAuthenticated ? 'evidence-verify' : null, fetchVerify, {
+    revalidateOnFocus: false,
+  })
+
   return (
-    <PageLayout role="admin" title="Evidence Management" subtitle="Platform-wide evidence vault and archival">
+    <PageLayout
+      role="admin"
+      title="Evidence Vault"
+      subtitle="Tamper-evident, hash-chained evidence for this tenant"
+    >
       <div className="space-y-6">
-        <div className="grid lg:grid-cols-3 gap-4 text-center">
-          <Card className="p-4"><p className="text-xs text-muted-foreground">Total Items</p><p className="text-2xl font-bold">891,234</p></Card>
-          <Card className="p-4"><p className="text-xs text-muted-foreground">Storage Used</p><p className="text-2xl font-bold">2.4 TB</p></Card>
-          <Card className="p-4"><p className="text-xs text-muted-foreground">Retention Days</p><p className="text-2xl font-bold">2,555</p></Card>
+        {error && (
+          <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+            Could not load evidence. {String((error as Error).message ?? error)}
+          </div>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Card className="p-6">
+            <p className="text-xs text-muted-foreground">Chain events</p>
+            <p className="text-2xl font-bold text-foreground">
+              {verify ? verify.totalEvents.toLocaleString() : '—'}
+            </p>
+          </Card>
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              {verify?.intact ? (
+                <ShieldCheck className="h-5 w-5 text-green-600" />
+              ) : verify ? (
+                <ShieldAlert className="h-5 w-5 text-destructive" />
+              ) : (
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground">Chain integrity</p>
+                <p className="text-lg font-bold text-foreground">
+                  {verify ? (verify.intact ? 'Intact' : 'Broken') : 'Verifying…'}
+                </p>
+              </div>
+            </div>
+            {verify && !verify.intact && verify.reason && (
+              <p className="mt-2 text-xs text-destructive">{verify.reason}</p>
+            )}
+          </Card>
         </div>
+
         <Card className="p-6">
-          <h3 className="text-base font-bold text-foreground mb-4">Recent Archives</h3>
+          <h3 className="text-base font-bold text-foreground mb-4">Recent evidence events</h3>
+          {isLoading && !timeline && (
+            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading evidence chain…
+            </div>
+          )}
+          {timeline && timeline.length === 0 && (
+            <p className="text-sm text-muted-foreground">No evidence events yet.</p>
+          )}
           <div className="space-y-2">
-            {[
-              { id: "ARC-001", name: "Q4 2023 Case Archive", items: 12456, size: "456 GB", created: "Jan 1, 2024" },
-              { id: "ARC-002", name: "Investigation Records - Regional", items: 8934, size: "234 GB", created: "Dec 15, 2023" },
-              { id: "ARC-003", name: "Compliance Documentation", items: 45678, size: "1.2 TB", created: "Dec 1, 2023" },
-            ].map((archive) => (
-              <div key={archive.id} className="flex items-center justify-between p-3 bg-muted/40 rounded">
-                <div>
-                  <p className="text-sm font-medium text-foreground">{archive.name}</p>
-                  <p className="text-xs text-muted-foreground">{archive.items} items · {archive.size} · {archive.created}</p>
+            {timeline?.slice(0, 50).map((ev) => (
+              <div key={ev.id} className="flex items-center justify-between p-3 bg-muted/40 rounded">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-primary/10 text-primary border-0">{ev.eventType}</Badge>
+                    <span className="text-xs text-muted-foreground">{ev.entityType}</span>
+                  </div>
+                  <p className="text-sm text-foreground truncate mt-1">{ev.eventDescription}</p>
                 </div>
-                <Button size="sm" variant="outline" className="gap-1"><Download className="h-3 w-3" /></Button>
+                <div className="text-right shrink-0 ml-3">
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(ev.occurredAt).toLocaleString()}
+                  </p>
+                  <p className="text-[10px] font-mono text-muted-foreground/60">
+                    {ev.eventHash.slice(0, 12)}…
+                  </p>
+                </div>
               </div>
             ))}
           </div>
