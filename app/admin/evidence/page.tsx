@@ -25,11 +25,8 @@ interface ChainVerification {
 }
 
 async function fetchTimeline(): Promise<EvidenceEvent[]> {
-  // entityType/entityId are optional on the backend (empty = no filter); the
-  // generated spec marks them required, so we pass empty strings.
-  const { data, error, response } = await backend.GET('/api/v1/evidence/timeline', {
-    params: { query: { entityType: '', entityId: '' } },
-  })
+  // entityType/entityId are optional (omit = no filter, full timeline).
+  const { data, error, response } = await backend.GET('/api/v1/evidence/timeline')
   if (error || !response.ok) throw new Error(`Failed to load evidence (${response.status})`)
   return (data as unknown as EvidenceEvent[]) ?? []
 }

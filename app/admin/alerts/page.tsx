@@ -19,10 +19,8 @@ interface Alert {
 }
 
 async function fetchAlerts(): Promise<Alert[]> {
-  // `unread` is optional on the backend (empty = all); spec marks it required.
-  const { data, error, response } = await backend.GET('/api/v1/alerts', {
-    params: { query: { unread: '' } },
-  })
+  // `unread` is optional (omit = all alerts).
+  const { data, error, response } = await backend.GET('/api/v1/alerts')
   if (error || !response.ok) throw new Error(`Failed to load alerts (${response.status})`)
   // The endpoint may return a bare array or a paginated shape.
   const raw = data as unknown as Alert[] | { items?: Alert[] }
