@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -11,64 +12,77 @@ import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   Heart, UserPlus, Bell, Shield, Phone, Mail, Edit, Trash2,
-  CheckCircle, Lock, CreditCard, Eye, AlertTriangle
+  CheckCircle, Lock, CreditCard, Eye, AlertTriangle, Loader2
 } from "lucide-react"
 
-const contacts = [
-  {
-    id: "TC-001",
-    name: "Margaret Smith",
-    relation: "Mother",
-    phone: "+61 4 1111 2222",
-    email: "margaret@example.com",
-    role: "Guardian",
-    verified: true,
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type ContactRow = {
+  id: string
+  fullName: string
+  relationship?: string | null
+  email?: string | null
+  phone?: string | null
+  status: string
+  canReceiveAlerts: boolean
+  canApproveHighRiskActions: boolean
+}
+
+type DisplayContact = {
+  id: string
+  name: string
+  relation: string
+  phone: string
+  email: string
+  role: string
+  verified: boolean
+  permissions: {
+    scamhold: boolean
+    giftcardguard: boolean
+    walletguard: boolean
+    emergencyAlerts: boolean
+    approvalReview: boolean
+  }
+  notifyOn: string[]
+}
+
+function contactRole(c: ContactRow): string {
+  if (c.canApproveHighRiskActions && c.canReceiveAlerts) return "Guardian"
+  if (c.canApproveHighRiskActions) return "Verify Only"
+  if (c.canReceiveAlerts) return "Emergency Contact"
+  return "Contact"
+}
+
+function mapContact(c: ContactRow): DisplayContact {
+  const approve = c.canApproveHighRiskActions
+  return {
+    id: c.id,
+    name: c.fullName,
+    relation: c.relationship ?? "",
+    phone: c.phone ?? "",
+    email: c.email ?? "",
+    role: contactRole(c),
+    verified: c.status === "ACTIVE",
     permissions: {
-      scamhold: true,
-      giftcardguard: true,
-      walletguard: true,
-      emergencyAlerts: true,
-      approvalReview: true,
+      scamhold: approve,
+      giftcardguard: approve,
+      walletguard: approve,
+      emergencyAlerts: c.canReceiveAlerts,
+      approvalReview: approve,
     },
-    notifyOn: ["High Risk Calls", "ScamHold Pauses", "Gift Card Blocks", "Remote Access Attempts"],
-  },
-  {
-    id: "TC-002",
-    name: "James Smith",
-    relation: "Son",
-    phone: "+61 4 3333 4444",
-    email: "james@example.com",
-    role: "Emergency Contact",
-    verified: true,
-    permissions: {
-      scamhold: false,
-      giftcardguard: true,
-      walletguard: false,
-      emergencyAlerts: true,
-      approvalReview: false,
-    },
-    notifyOn: ["Critical Alerts Only"],
-  },
-  {
-    id: "TC-003",
-    name: "Dr. Sarah Lee",
-    relation: "Financial Advisor",
-    phone: "+61 2 5555 6666",
-    email: "sarah@advisor.com",
-    role: "Verify Only",
-    verified: false,
-    permissions: {
-      scamhold: false,
-      giftcardguard: false,
-      walletguard: false,
-      emergencyAlerts: false,
-      approvalReview: true,
-    },
-    notifyOn: [],
-  },
-]
+    notifyOn: c.canReceiveAlerts ? ["Emergency Alerts", "High-Risk Events"] : [],
+  }
+}
+
+async function fetchContacts(): Promise<DisplayContact[]> {
+  const { data, error } = await backend.GET("/api/v1/trusted-contacts")
+  if (error || !data) throw new Error("Could not load trusted contacts")
+  return (data as unknown as ContactRow[]).map(mapContact)
+}
 
 const permissionLabels: Record<string, { label: string; icon: React.ElementType; desc: string }> = {
   scamhold: { label: "ScamHold AI™", icon: Lock, desc: "Can review and approve ScamHold pauses" },
@@ -79,8 +93,58 @@ const permissionLabels: Record<string, { label: string; icon: React.ElementType;
 }
 
 export default function TrustedContactsPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading, mutate } = useSWR(
+    isAuthenticated ? "trusted-contacts" : null,
+    fetchContacts,
+  )
+  const contacts = data ?? []
+
   const [showAdd, setShowAdd] = useState(false)
-  const [editContact, setEditContact] = useState<typeof contacts[0] | null>(null)
+  const [editContact, setEditContact] = useState<DisplayContact | null>(null)
+
+  // Add-contact form state.
+  const [form, setForm] = useState({ fullName: "", relationship: "", phone: "", email: "", role: "emergency" })
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+
+  const submitContact = async () => {
+    if (!form.fullName.trim()) { setFormError("Name is required."); return }
+    setSaving(true)
+    setFormError(null)
+    try {
+      const canApprove = form.role === "guardian" || form.role === "verify"
+      const canAlerts = form.role === "guardian" || form.role === "emergency"
+      const { error: err } = await backend.POST("/api/v1/trusted-contacts", {
+        body: {
+          fullName: form.fullName.trim(),
+          relationship: form.relationship.trim() || undefined,
+          email: form.email.trim() || undefined,
+          phone: form.phone.trim() || undefined,
+          canReceiveAlerts: canAlerts,
+          canApproveHighRiskActions: canApprove,
+        } as never,
+      })
+      if (err) throw new Error("Create failed")
+      setShowAdd(false)
+      setForm({ fullName: "", relationship: "", phone: "", email: "", role: "emergency" })
+      void mutate()
+    } catch {
+      setFormError("Couldn't add the contact. Check the details and try again.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteContact = async (id: string) => {
+    // Optimistic: drop locally, then revalidate.
+    void mutate(contacts.filter((c) => c.id !== id), { revalidate: false })
+    try {
+      await backend.DELETE("/api/v1/trusted-contacts/{id}", { params: { path: { id } } })
+    } finally {
+      void mutate()
+    }
+  }
 
   return (
     <PageLayout role="individual" title="Trusted Contacts" subtitle="People who can help verify, approve, and respond to scam threats on your behalf">
@@ -103,10 +167,10 @@ export default function TrustedContactsPage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-4 gap-4">
           {[
-            { label: "Total Contacts", value: "3", color: "text-primary", bg: "bg-primary/10" },
-            { label: "Guardians", value: "1", color: "text-green-600", bg: "bg-green-50" },
-            { label: "Verified", value: "2", color: "text-green-600", bg: "bg-green-50" },
-            { label: "Alerts Sent This Month", value: "4", color: "text-orange-600", bg: "bg-orange-50" },
+            { label: "Total Contacts", value: String(contacts.length), color: "text-primary", bg: "bg-primary/10" },
+            { label: "Guardians", value: String(contacts.filter((c) => c.role === "Guardian").length), color: "text-green-600", bg: "bg-green-50" },
+            { label: "Verified", value: String(contacts.filter((c) => c.verified).length), color: "text-green-600", bg: "bg-green-50" },
+            { label: "Can Approve", value: String(contacts.filter((c) => c.permissions.approvalReview).length), color: "text-orange-600", bg: "bg-orange-50" },
           ].map((s, i) => (
             <Card key={i} className="p-5">
               <div className={`w-9 h-9 ${s.bg} rounded-lg flex items-center justify-center mb-3`}>
@@ -128,7 +192,31 @@ export default function TrustedContactsPage() {
 
         {/* Contact Cards */}
         <div className="space-y-4">
-          {contacts.map((c) => (
+          {!isAuthenticated ? (
+            <Card className="p-12 text-center text-sm text-muted-foreground">
+              Sign in to manage your trusted contacts.
+            </Card>
+          ) : isLoading ? (
+            <Card className="p-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading contacts...
+            </Card>
+          ) : error ? (
+            <Card className="p-12 text-center text-sm text-destructive">
+              Couldn&apos;t load your contacts. Please try again.
+            </Card>
+          ) : contacts.length === 0 ? (
+            <Card className="p-12 text-center">
+              <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
+                <Heart className="h-6 w-6 text-primary" />
+              </div>
+              <p className="text-sm font-semibold text-foreground">No trusted contacts yet</p>
+              <p className="text-sm text-muted-foreground mt-1 mb-4">
+                Add someone you trust to help verify and respond to scam threats on your behalf.
+              </p>
+              <Button size="sm" onClick={() => setShowAdd(true)}><UserPlus className="h-4 w-4 mr-1.5" /> Add your first contact</Button>
+            </Card>
+          ) : (
+            contacts.map((c) => (
             <Card key={c.id} className="p-5">
               <div className="flex items-start justify-between gap-4 mb-4">
                 <div className="flex items-start gap-4 flex-1 min-w-0">
@@ -162,7 +250,7 @@ export default function TrustedContactsPage() {
                 </div>
                 <div className="flex gap-1 flex-shrink-0">
                   <Button size="sm" variant="ghost" className="h-8" onClick={() => setEditContact(c)}><Edit className="h-3.5 w-3.5" /></Button>
-                  <Button size="sm" variant="ghost" className="h-8 text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button>
+                  <Button size="sm" variant="ghost" className="h-8 text-destructive" onClick={() => deleteContact(c.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
                 </div>
               </div>
 
@@ -185,7 +273,8 @@ export default function TrustedContactsPage() {
                 </div>
               </div>
             </Card>
-          ))}
+            ))
+          )}
         </div>
 
         {/* Guardian Pause Info */}
@@ -214,24 +303,24 @@ export default function TrustedContactsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1.5 block">Full Name</Label>
-                  <Input placeholder="e.g. Margaret Smith" className="h-9" />
+                  <Input placeholder="e.g. Margaret Smith" className="h-9" value={form.fullName} onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))} />
                 </div>
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1.5 block">Relationship</Label>
-                  <Input placeholder="e.g. Mother, Son" className="h-9" />
+                  <Input placeholder="e.g. Mother, Son" className="h-9" value={form.relationship} onChange={(e) => setForm((f) => ({ ...f, relationship: e.target.value }))} />
                 </div>
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1.5 block">Phone</Label>
-                  <Input placeholder="+61 4 ..." className="h-9" />
+                  <Input placeholder="+61 4 ..." className="h-9" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
                 </div>
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1.5 block">Email</Label>
-                  <Input placeholder="email@example.com" className="h-9" />
+                  <Input placeholder="email@example.com" className="h-9" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
                 </div>
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Role</Label>
-                <Select defaultValue="emergency">
+                <Select value={form.role} onValueChange={(v) => setForm((f) => ({ ...f, role: v }))}>
                   <SelectTrigger className="h-9">
                     <SelectValue />
                   </SelectTrigger>
@@ -263,8 +352,11 @@ export default function TrustedContactsPage() {
                   })}
                 </div>
               </div>
+              {formError && <p className="text-sm text-destructive">{formError}</p>}
               <div className="flex gap-2 pt-2">
-                <Button size="sm" className="flex-1">Send Invitation</Button>
+                <Button size="sm" className="flex-1" onClick={submitContact} disabled={saving || !form.fullName.trim()}>
+                  {saving ? (<><Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> Adding...</>) : "Send Invitation"}
+                </Button>
                 <Button size="sm" variant="outline" onClick={() => setShowAdd(false)}>Cancel</Button>
               </div>
             </div>
