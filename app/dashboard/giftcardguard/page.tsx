@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -11,57 +12,110 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   CreditCard, AlertTriangle, Shield, Users, Archive, CheckCircle,
-  XCircle, Eye, Clock, Search, Download, Phone
+  XCircle, Eye, Clock, Search, Download, Phone, Loader2
 } from "lucide-react"
 
-const gcHistory = [
-  {
-    id: "GC-001",
-    brand: "Google Play",
-    amount: "$500",
-    requestedBy: "Caller — ATO Impersonation",
-    time: "1h ago",
-    result: "blocked",
-    reason: "Gift card payment for government debt is a scam tactic. ATO does not accept gift cards.",
-    elderMode: true,
-    approvalNeeded: true,
-  },
-  {
-    id: "GC-002",
-    brand: "Apple iTunes",
-    amount: "$200",
-    requestedBy: "Text message — Fake tech support",
-    time: "3 days ago",
-    result: "blocked",
-    reason: "Caller instructed not to tell anyone about the code. Classic secrecy pressure.",
-    elderMode: false,
-    approvalNeeded: false,
-  },
-  {
-    id: "GC-003",
-    brand: "Steam",
-    amount: "$50",
-    requestedBy: "Self (personal purchase)",
-    time: "5 days ago",
-    result: "approved",
-    reason: "Initiated by user from trusted device. No call or pressure detected.",
-    elderMode: false,
-    approvalNeeded: false,
-  },
-  {
-    id: "GC-004",
-    brand: "eBay",
-    amount: "$300",
-    requestedBy: "Romance contact — Instagram DM",
-    time: "1 week ago",
-    result: "flagged",
-    reason: "Gift card requested by online-only contact after 3-week grooming conversation.",
-    elderMode: true,
-    approvalNeeded: true,
-  },
-]
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type GcRow = {
+  id: string
+  cardBrand?: string | null
+  denominationMinor?: number | string | null
+  currency?: string
+  codeRevealRequested: boolean
+  photoOfCodeRequested: boolean
+  impersonationType: string
+  urgencyDetected: boolean
+  secrecyDetected: boolean
+  elderModeActive: boolean
+  riskScore: number
+  riskLevel: string
+  decision: string
+  createdAt?: string
+}
+
+type DisplayGc = {
+  id: string
+  brand: string
+  amount: string
+  requestedBy: string
+  time: string
+  result: string
+  reason: string
+  elderMode: boolean
+  approvalNeeded: boolean
+}
+
+const DECISION_RESULT: Record<string, string> = {
+  PENDING: "pending",
+  AVOIDED: "blocked",
+  CONTINUED_ANYWAY: "approved",
+  ESCALATED_TO_TRUSTED_CONTACT: "flagged",
+}
+
+function gcTitle(s?: string | null): string {
+  return (s ?? "").toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function gcAmount(minor?: number | string | null, currency = "USD"): string {
+  if (minor == null) return "—"
+  const n = Number(minor)
+  if (!isFinite(n) || n <= 0) return "—"
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(n / 100)
+  } catch {
+    return `${(n / 100).toFixed(2)} ${currency}`
+  }
+}
+
+function gcTimeAgo(iso?: string): string {
+  if (!iso) return ""
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (isNaN(s)) return ""
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60); if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24); return d === 1 ? "Yesterday" : `${d} days ago`
+}
+
+function mapGc(r: GcRow): DisplayGc {
+  const reasons: string[] = []
+  if (r.codeRevealRequested) reasons.push("code reveal requested")
+  if (r.photoOfCodeRequested) reasons.push("photo of code requested")
+  if (r.secrecyDetected) reasons.push("secrecy pressure")
+  if (r.urgencyDetected) reasons.push("urgency")
+  const reason = reasons.length
+    ? `Detected: ${reasons.join(", ")}.`
+    : `Risk ${gcTitle(r.riskLevel)} (score ${r.riskScore}).`
+  const requestedBy =
+    r.impersonationType && r.impersonationType !== "NONE"
+      ? `${gcTitle(r.impersonationType)} impersonation`
+      : "Self / no impersonation detected"
+  return {
+    id: r.id,
+    brand: r.cardBrand || "Gift Card",
+    amount: gcAmount(r.denominationMinor, r.currency),
+    requestedBy,
+    time: gcTimeAgo(r.createdAt),
+    result: DECISION_RESULT[r.decision] ?? "pending",
+    reason,
+    elderMode: r.elderModeActive,
+    approvalNeeded:
+      r.decision === "ESCALATED_TO_TRUSTED_CONTACT" ||
+      r.riskLevel === "HIGH" ||
+      r.riskLevel === "CRITICAL",
+  }
+}
+
+async function fetchGcHistory(): Promise<DisplayGc[]> {
+  const { data, error } = await backend.GET("/api/v1/giftcardguard/history")
+  if (error || !data) throw new Error("Could not load gift card history")
+  return (data as unknown as GcRow[]).map(mapGc)
+}
 
 const resultColors: Record<string, string> = {
   blocked: "bg-red-100 text-red-700",
@@ -71,9 +125,18 @@ const resultColors: Record<string, string> = {
 }
 
 export default function GiftCardGuardPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(
+    isAuthenticated ? "giftcardguard-history" : null,
+    fetchGcHistory,
+  )
+  const gcHistory = data ?? []
+  const blockedCount = gcHistory.filter((g) => g.result === "blocked").length
+  const flaggedCount = gcHistory.filter((g) => g.result === "flagged").length
+
   const [scanResult, setScanResult] = useState<null | "safe" | "scam" | "suspicious">(null)
   const [scanning, setScanning] = useState(false)
-  const [selectedItem, setSelectedItem] = useState<typeof gcHistory[0] | null>(null)
+  const [selectedItem, setSelectedItem] = useState<DisplayGc | null>(null)
   const [showDoNotReveal, setShowDoNotReveal] = useState(false)
 
   const runScan = () => {
@@ -133,10 +196,10 @@ export default function GiftCardGuardPage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-4 gap-4">
           {[
-            { label: "Scam Requests Blocked", value: "3", color: "text-red-600", bg: "bg-red-50", icon: XCircle },
-            { label: "Estimated Saved", value: "$1,000", color: "text-green-600", bg: "bg-green-50", icon: Shield },
-            { label: "Elder Mode Protected", value: "Active", color: "text-primary", bg: "bg-primary/10", icon: Users },
-            { label: "Scan Accuracy", value: "98%", color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
+            { label: "Scam Requests Blocked", value: String(blockedCount), color: "text-red-600", bg: "bg-red-50", icon: XCircle },
+            { label: "Flagged for Review", value: String(flaggedCount), color: "text-yellow-600", bg: "bg-yellow-50", icon: AlertTriangle },
+            { label: "Total Scanned", value: String(gcHistory.length), color: "text-primary", bg: "bg-primary/10", icon: Users },
+            { label: "Cleared Safe", value: String(gcHistory.filter((g) => g.result === "approved").length), color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
           ].map((stat, i) => {
             const Icon = stat.icon
             return (
@@ -255,32 +318,56 @@ export default function GiftCardGuardPage() {
               </Button>
             </div>
             <Card className="divide-y divide-border overflow-hidden">
-              {gcHistory.map((item) => (
-                <div key={item.id} className="flex items-start gap-4 p-4 hover:bg-muted/20 transition-colors">
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center flex-shrink-0">
-                    <CreditCard className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="text-xs font-mono text-muted-foreground">{item.id}</span>
-                      <span className="text-sm font-semibold text-foreground">{item.brand} — {item.amount}</span>
-                      <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" /> {item.time}</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">{item.requestedBy}</p>
-                    <p className="text-xs text-primary mt-0.5">{item.reason}</p>
-                    <div className="flex gap-1.5 mt-1.5 flex-wrap">
-                      {item.elderMode && <Badge className="text-[10px] border-0 bg-blue-50 text-blue-700">Elder Mode</Badge>}
-                      {item.approvalNeeded && <Badge className="text-[10px] border-0 bg-orange-50 text-orange-700">Approval Required</Badge>}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <Badge className={`text-xs border-0 capitalize ${resultColors[item.result]}`}>{item.result}</Badge>
-                    <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedItem(item)}>
-                      <Eye className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+              {!isAuthenticated ? (
+                <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  Sign in to view your gift card scan history.
                 </div>
-              ))}
+              ) : isLoading ? (
+                <div className="px-4 py-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading scan history...
+                </div>
+              ) : error ? (
+                <div className="px-4 py-12 text-center text-sm text-destructive">
+                  Couldn&apos;t load gift card history. Please try again.
+                </div>
+              ) : gcHistory.length === 0 ? (
+                <div className="px-4 py-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
+                    <CreditCard className="h-6 w-6 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No gift card requests scanned yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Scan a request above. Flagged gift card scams will be logged here as evidence.
+                  </p>
+                </div>
+              ) : (
+                gcHistory.map((item) => (
+                  <div key={item.id} className="flex items-start gap-4 p-4 hover:bg-muted/20 transition-colors">
+                    <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center flex-shrink-0">
+                      <CreditCard className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="text-xs font-mono text-muted-foreground">{item.id.slice(0, 8)}</span>
+                        <span className="text-sm font-semibold text-foreground">{item.brand} — {item.amount}</span>
+                        {item.time && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" /> {item.time}</span>}
+                      </div>
+                      <p className="text-sm text-muted-foreground">{item.requestedBy}</p>
+                      <p className="text-xs text-primary mt-0.5">{item.reason}</p>
+                      <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                        {item.elderMode && <Badge className="text-[10px] border-0 bg-blue-50 text-blue-700">Elder Mode</Badge>}
+                        {item.approvalNeeded && <Badge className="text-[10px] border-0 bg-orange-50 text-orange-700">Approval Required</Badge>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <Badge className={`text-xs border-0 capitalize ${resultColors[item.result] ?? resultColors.pending}`}>{item.result}</Badge>
+                      <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedItem(item)}>
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
             </Card>
           </TabsContent>
 
