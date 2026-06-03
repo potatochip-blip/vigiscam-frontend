@@ -59,7 +59,7 @@ import type {
   OrganizationSettings,
 } from './types';
 import { backend, setAuthToken } from './backend';
-import { mapRegistryEntry, toUpperSnake } from './mappers';
+import { mapAlert, mapRegistryEntry, toUpperSnake } from './mappers';
 
 // ============================================================================
 // HELPERS
@@ -426,13 +426,84 @@ export const casesApi = {
   getNotes: (_id: string) => notImplemented<CaseNote[]>('getNotes'),
 };
 
+/** Raw backend Alert row shape (Prisma model Alert). */
+type BackendAlertRow = {
+  id: string;
+  type: string;
+  severity: string;
+  title: string;
+  message: string;
+  readAt?: string | null;
+  createdAt: string;
+};
+
 export const alertsApi = {
-  getAlerts: (_p?: PaginationParams & { unreadOnly?: boolean }) =>
-    notImplemented<PaginatedResponse<Alert>>('getAlerts'),
-  markAsRead: (_id: string) => notImplemented<Alert>('markAsRead'),
-  markAllAsRead: () => notImplemented<void>('markAllAsRead'),
-  getUnreadCount: () =>
-    notImplemented<{ count: number }>('getUnreadCount'),
+  // Wired to GET /api/v1/alerts. The backend caps the list at 100 (most-recent
+  // first) and the generated client doesn't yet carry the `unread` query param,
+  // so unread filtering + pagination are applied client-side over that list.
+  async getAlerts(
+    params: PaginationParams & { unreadOnly?: boolean } = {},
+  ): Promise<ApiResponse<PaginatedResponse<Alert>>> {
+    const { data, error, response } = await backend.GET('/api/v1/alerts');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    let mapped = (data as BackendAlertRow[]).map(mapAlert);
+    if (params.unreadOnly) {
+      mapped = mapped.filter((a) => !a.readAt);
+    }
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const start = (page - 1) * limit;
+    return ok({
+      data: mapped.slice(start, start + limit),
+      pagination: {
+        page,
+        limit,
+        total: mapped.length,
+        totalPages: Math.max(1, Math.ceil(mapped.length / limit)),
+        hasNext: start + limit < mapped.length,
+        hasPrev: page > 1,
+      },
+    });
+  },
+
+  async markAsRead(id: string): Promise<ApiResponse<Alert>> {
+    const { data, error, response } = await backend.POST(
+      '/api/v1/alerts/{id}/read',
+      { params: { path: { id } } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(mapAlert(data as BackendAlertRow));
+  },
+
+  // Backend has no bulk-read endpoint; mark each unread alert read in parallel.
+  async markAllAsRead(): Promise<ApiResponse<void>> {
+    const { data, error, response } = await backend.GET('/api/v1/alerts');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const unread = (data as BackendAlertRow[]).filter((a) => !a.readAt);
+    await Promise.all(
+      unread.map((a) =>
+        backend.POST('/api/v1/alerts/{id}/read', { params: { path: { id: a.id } } }),
+      ),
+    );
+    return ok(undefined as unknown as void);
+  },
+
+  async getUnreadCount(): Promise<ApiResponse<{ count: number }>> {
+    const { data, error } = await backend.GET('/api/v1/alerts');
+    if (error || !data) {
+      // Soft-fail to zero — an unread badge should never break the shell.
+      return ok({ count: 0 });
+    }
+    return ok({
+      count: (data as BackendAlertRow[]).filter((a) => !a.readAt).length,
+    });
+  },
 };
 
 export const dashboardApi = {

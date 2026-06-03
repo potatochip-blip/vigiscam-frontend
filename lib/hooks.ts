@@ -20,7 +20,6 @@ import type {
   ScamNetwork,
   ScamReport,
   Case,
-  Alert,
   DashboardStats,
   VerificationQueueItem,
   PublicRegistryDraft,
@@ -437,85 +436,32 @@ export function useSubmissions(params: PaginationParams & FilterParams = {}) {
 // ============================================================================
 
 /**
- * Hook to get user alerts
+ * Hook to get user alerts. Wired to GET /api/v1/alerts.
  */
 export function useAlerts(params: PaginationParams & { unreadOnly?: boolean } = {}) {
   return useSWR(
     ["alerts", params],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.alerts.getAlerts(params)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      
-      const mockAlerts: Alert[] = [
-        {
-          id: "alert-1",
-          type: "new-threat",
-          severity: "critical",
-          title: "New High-Volume Scam Network Detected",
-          message: "A new tech support scam network targeting US seniors has been identified.",
-          createdAt: new Date().toISOString(),
-          actionUrl: "/scam-intelligence/networks",
-        },
-        {
-          id: "alert-2",
-          type: "takedown-update",
-          severity: "medium",
-          title: "Takedown Confirmed",
-          message: "microsoft-support-helpdesk.com has been successfully taken down.",
-          createdAt: new Date(Date.now() - 3600000).toISOString(),
-          readAt: new Date(Date.now() - 1800000).toISOString(),
-        },
-        {
-          id: "alert-3",
-          type: "case-update",
-          severity: "low",
-          title: "Case Status Updated",
-          message: "Case #CAS-2847 has been escalated to law enforcement.",
-          createdAt: new Date(Date.now() - 7200000).toISOString(),
-        },
-      ]
-      
-      let data = [...mockAlerts]
-      if (params.unreadOnly) {
-        data = data.filter((alert) => !alert.readAt)
+      const res = await api.alerts.getAlerts(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "alerts failed")
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return res.data
     },
     SWR_CONFIG
   )
 }
 
 /**
- * Hook to get unread alert count
+ * Hook to get unread alert count. Wired to GET /api/v1/alerts (counted
+ * client-side). Soft-fails to 0 so the notification badge never breaks.
  */
 export function useUnreadAlertCount() {
   return useSWR(
     "unread-alert-count",
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.alerts.getUnreadCount()
-      // return response.data?.count
-      
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      return 2 // Mock unread count
+      const res = await api.alerts.getUnreadCount()
+      return res.success && res.data ? res.data.count : 0
     },
     { ...SWR_CONFIG, refreshInterval: 30000 }
   )

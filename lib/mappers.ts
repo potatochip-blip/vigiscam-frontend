@@ -12,6 +12,9 @@
  * source (e.g. `region`, `commonPhrases`), it gets a sensible default.
  */
 import type {
+  Alert,
+  AlertSeverity,
+  AlertType,
   IndicatorType,
   RegistryEntry,
   ScamFamily,
@@ -81,6 +84,55 @@ export function mapVerificationStatus(
     'takedown-confirmed': 'takedown-confirmed',
   };
   return map[k] ?? 'pending-verification';
+}
+
+/** Backend AlertSeverity (INFO|WARNING|HIGH|CRITICAL) → frontend AlertSeverity. */
+export function mapAlertSeverity(s: string): AlertSeverity {
+  const map: Record<string, AlertSeverity> = {
+    INFO: 'info',
+    WARNING: 'medium',
+    HIGH: 'high',
+    CRITICAL: 'critical',
+  };
+  return map[(s ?? '').toUpperCase()] ?? 'info';
+}
+
+/**
+ * Backend Alert.type is a free-form string; best-effort map it onto the
+ * frontend's AlertType union, falling back to 'system'.
+ */
+export function mapAlertType(t: string): AlertType {
+  const k = (t ?? '').toLowerCase();
+  if (k.includes('takedown')) return 'takedown-update';
+  if (k.includes('case')) return 'case-update';
+  if (k.includes('network')) return 'network-activity';
+  if (k.includes('complian')) return 'compliance';
+  if (k.includes('threat') || k.includes('risk') || k.includes('scam') || k.includes('fraud'))
+    return 'new-threat';
+  return 'system';
+}
+
+/** Backend Alert (Prisma row) → frontend Alert. */
+export function mapAlert(
+  a: {
+    id: string;
+    type: string;
+    severity: string;
+    title: string;
+    message: string;
+    readAt?: string | Date | null;
+    createdAt: string | Date;
+  },
+): Alert {
+  return {
+    id: a.id,
+    type: mapAlertType(a.type),
+    severity: mapAlertSeverity(a.severity),
+    title: a.title,
+    message: a.message,
+    createdAt: new Date(a.createdAt).toISOString(),
+    readAt: a.readAt ? new Date(a.readAt).toISOString() : undefined,
+  };
 }
 
 // ─── Object mappers ─────────────────────────────────────────────────────────
