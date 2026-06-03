@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -10,61 +11,111 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   Shield, AlertTriangle, CheckCircle, XCircle, Clock, Search,
-  Download, Eye, Archive, Users, Copy, Flag, Link2
+  Download, Eye, Archive, Users, Copy, Flag, Link2, Loader2
 } from "lucide-react"
 
-const walletHistory = [
-  {
-    id: "WG-001",
-    address: "bc1q7n9k2example3n9k2f4p8r1z5y6w8u3v2t1s0",
-    chain: "Bitcoin",
-    riskScore: 96,
-    riskLevel: "critical",
-    flags: ["Linked to known romance scam cluster", "3 previous victim reports", "Associated with pig-butchering platform"],
-    firstSeen: "2026-03-12",
-    lastSeen: "2026-05-14",
-    checkedAt: "1h ago",
-    saved: true,
-  },
-  {
-    id: "WG-002",
-    address: "0x4f3a9c2d1e8b7a6f5e4d3c2b1a0example9d8c",
-    chain: "Ethereum",
-    riskScore: 78,
-    riskLevel: "high",
-    flags: ["Mixer/tumbler interaction detected", "High-volume small transactions (layering pattern)"],
-    firstSeen: "2026-01-05",
-    lastSeen: "2026-05-10",
-    checkedAt: "3 days ago",
-    saved: false,
-  },
-  {
-    id: "WG-003",
-    address: "T9k2f4p8r1z5y6w8u3v2exampleTRON",
-    chain: "TRON (USDT)",
-    riskScore: 91,
-    riskLevel: "critical",
-    flags: ["Investment fraud platform deposit address", "Linked to 14 victim reports on SCAMZY™"],
-    firstSeen: "2026-02-20",
-    lastSeen: "2026-05-15",
-    checkedAt: "2h ago",
-    saved: true,
-  },
-  {
-    id: "WG-004",
-    address: "bc1qar0srrr7example4f3n9k2p8r1z5y6w8u3v2",
-    chain: "Bitcoin",
-    riskScore: 22,
-    riskLevel: "low",
-    flags: ["No known associations", "Verified exchange withdrawal address"],
-    firstSeen: "2026-05-01",
-    lastSeen: "2026-05-01",
-    checkedAt: "5 days ago",
-    saved: false,
-  },
-]
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type WalletRow = {
+  id: string
+  network: string
+  address: string
+  addressValid: boolean
+  reputation: string
+  clipboardSwapDetected: boolean
+  walletSwitched: boolean
+  graphMatchScore?: number | null
+  urgencyDetected: boolean
+  secrecyDetected: boolean
+  riskScore: number
+  riskLevel: string
+  decision?: string
+  createdAt?: string
+}
+
+type DisplayWallet = {
+  id: string
+  address: string
+  chain: string
+  riskScore: number
+  riskLevel: string
+  flags: string[]
+  firstSeen: string
+  lastSeen: string
+  checkedAt: string
+  saved: boolean
+}
+
+const NETWORK_LABEL: Record<string, string> = {
+  ETH: "Ethereum", BTC: "Bitcoin", TRX: "TRON", SOL: "Solana", BSC: "BNB Chain",
+  MATIC: "Polygon", ARBITRUM: "Arbitrum", OPTIMISM: "Optimism", OTHER: "Other",
+}
+
+function inferNetwork(address: string): string {
+  const a = address.trim()
+  if (/^0x[0-9a-fA-F]{40}$/.test(a)) return "ETH"
+  if (/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,}$/.test(a)) return "BTC"
+  if (/^T[1-9A-HJ-NP-Za-km-z]{20,}$/.test(a)) return "TRX"
+  return "OTHER"
+}
+
+function wgTitle(s?: string | null): string {
+  return (s ?? "").toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function wgDate(iso?: string): string {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString()
+}
+
+function wgTimeAgo(iso?: string): string {
+  if (!iso) return ""
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (isNaN(s)) return ""
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60); if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24); return d === 1 ? "1 day ago" : `${d} days ago`
+}
+
+function buildWalletFlags(r: WalletRow): string[] {
+  const flags: string[] = []
+  if (!r.addressValid) flags.push("Invalid address format for this network")
+  if (r.reputation && r.reputation !== "UNKNOWN") flags.push(`Reputation: ${wgTitle(r.reputation)}`)
+  if (r.clipboardSwapDetected) flags.push("Clipboard swap detected")
+  if (r.walletSwitched) flags.push("Recipient wallet switched mid-transaction")
+  if (r.graphMatchScore != null) flags.push(`Cluster match score ${r.graphMatchScore}/100`)
+  if (r.urgencyDetected) flags.push("Urgency pressure detected")
+  if (r.secrecyDetected) flags.push("Secrecy pressure detected")
+  if (flags.length === 0) flags.push("No adverse intelligence found")
+  return flags
+}
+
+function mapWallet(r: WalletRow): DisplayWallet {
+  return {
+    id: r.id,
+    address: r.address,
+    chain: NETWORK_LABEL[r.network] ?? wgTitle(r.network),
+    riskScore: r.riskScore,
+    riskLevel: (r.riskLevel ?? "medium").toLowerCase(),
+    flags: buildWalletFlags(r),
+    firstSeen: wgDate(r.createdAt),
+    lastSeen: wgDate(r.createdAt),
+    checkedAt: wgTimeAgo(r.createdAt),
+    saved: !!r.decision && r.decision !== "PENDING",
+  }
+}
+
+async function fetchWalletHistory(): Promise<DisplayWallet[]> {
+  const { data, error } = await backend.GET("/api/v1/walletguard/history")
+  if (error || !data) throw new Error("Could not load wallet check history")
+  return (data as unknown as WalletRow[]).map(mapWallet)
+}
 
 const riskColors: Record<string, string> = {
   critical: "bg-red-100 text-red-700",
@@ -81,18 +132,36 @@ const riskBarColors: Record<string, string> = {
 }
 
 export default function WalletGuardPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading, mutate } = useSWR(
+    isAuthenticated ? "walletguard-history" : null,
+    fetchWalletHistory,
+  )
+  const walletHistory = data ?? []
+
   const [address, setAddress] = useState("")
-  const [checkResult, setCheckResult] = useState<typeof walletHistory[0] | null>(null)
+  const [checkResult, setCheckResult] = useState<DisplayWallet | null>(null)
   const [checking, setChecking] = useState(false)
-  const [selectedItem, setSelectedItem] = useState<typeof walletHistory[0] | null>(null)
+  const [checkError, setCheckError] = useState<string | null>(null)
+  const [selectedItem, setSelectedItem] = useState<DisplayWallet | null>(null)
   const [showClipboardAlert, setShowClipboardAlert] = useState(false)
 
-  const runCheck = () => {
+  const runCheck = async () => {
+    if (!address.trim()) return
     setChecking(true)
-    setTimeout(() => {
-      setCheckResult(walletHistory[0])
+    setCheckError(null)
+    try {
+      const { data: res, error: err } = await backend.POST("/api/v1/walletguard/check", {
+        body: { network: inferNetwork(address), address: address.trim() } as never,
+      })
+      if (err || !res) throw new Error("Check failed")
+      setCheckResult(mapWallet(res as unknown as WalletRow))
+      void mutate()
+    } catch {
+      setCheckError("Couldn't check that address. Please try again.")
+    } finally {
       setChecking(false)
-    }, 1800)
+    }
   }
 
   return (
@@ -141,10 +210,10 @@ export default function WalletGuardPage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-4 gap-4">
           {[
-            { label: "Wallets Checked", value: "4", color: "text-primary", bg: "bg-primary/10", icon: Search },
-            { label: "High Risk Found", value: "3", color: "text-red-600", bg: "bg-red-50", icon: AlertTriangle },
-            { label: "Saved to Vault", value: "2", color: "text-orange-600", bg: "bg-orange-50", icon: Archive },
-            { label: "Clipboard Alerts", value: "0", color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
+            { label: "Wallets Checked", value: String(walletHistory.length), color: "text-primary", bg: "bg-primary/10", icon: Search },
+            { label: "High Risk Found", value: String(walletHistory.filter((w) => w.riskLevel === "high" || w.riskLevel === "critical").length), color: "text-red-600", bg: "bg-red-50", icon: AlertTriangle },
+            { label: "Saved / Decided", value: String(walletHistory.filter((w) => w.saved).length), color: "text-orange-600", bg: "bg-orange-50", icon: Archive },
+            { label: "Low Risk", value: String(walletHistory.filter((w) => w.riskLevel === "low").length), color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
           ].map((stat, i) => {
             const Icon = stat.icon
             return (
@@ -197,10 +266,11 @@ export default function WalletGuardPage() {
                   onChange={e => setAddress(e.target.value)}
                   className="h-9 font-mono text-sm"
                 />
-                <Button className="flex-shrink-0 h-9" onClick={runCheck} disabled={checking}>
-                  {checking ? "Checking..." : "Check"}
+                <Button className="flex-shrink-0 h-9" onClick={runCheck} disabled={checking || !address.trim()}>
+                  {checking ? (<><Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> Checking...</>) : "Check"}
                 </Button>
               </div>
+              {checkError && <p className="text-sm text-destructive">{checkError}</p>}
 
               {checkResult && (
                 <div className={`rounded-lg border p-5 space-y-4 ${checkResult.riskLevel === "critical" ? "border-red-300 bg-red-50" : checkResult.riskLevel === "high" ? "border-orange-200 bg-orange-50" : "border-green-200 bg-green-50"}`}>
@@ -267,32 +337,56 @@ export default function WalletGuardPage() {
               </Button>
             </div>
             <div className="space-y-3">
-              {walletHistory.map((item) => (
-                <Card key={item.id} className="p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className="text-xs font-mono text-muted-foreground">{item.id}</span>
-                        <Badge className={`text-xs border-0 ${riskColors[item.riskLevel]}`}>{item.riskLevel.toUpperCase()} — {item.riskScore}/100</Badge>
-                        <Badge className="text-xs border-0 bg-muted text-muted-foreground">{item.chain}</Badge>
-                        <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" />{item.checkedAt}</span>
-                      </div>
-                      <code className="text-xs text-muted-foreground break-all">{item.address.substring(0, 42)}...</code>
-                      <div className="flex gap-1 mt-1.5 flex-wrap">
-                        {item.flags.slice(0, 2).map((f, i) => (
-                          <Badge key={i} className="text-[10px] border-0 bg-muted text-muted-foreground">{f}</Badge>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {item.saved && <Badge className="text-xs border-0 bg-blue-50 text-blue-700">Saved</Badge>}
-                      <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedItem(item)}>
-                        <Eye className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
+              {!isAuthenticated ? (
+                <Card className="p-12 text-center text-sm text-muted-foreground">
+                  Sign in to view your wallet check history.
                 </Card>
-              ))}
+              ) : isLoading ? (
+                <Card className="p-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading wallet checks...
+                </Card>
+              ) : error ? (
+                <Card className="p-12 text-center text-sm text-destructive">
+                  Couldn&apos;t load wallet history. Please try again.
+                </Card>
+              ) : walletHistory.length === 0 ? (
+                <Card className="p-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
+                    <Shield className="h-6 w-6 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No wallet checks yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Paste a crypto address in the Check tab to screen it against VIGISCAM wallet intelligence.
+                  </p>
+                </Card>
+              ) : (
+                walletHistory.map((item) => (
+                  <Card key={item.id} className="p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="text-xs font-mono text-muted-foreground">{item.id.slice(0, 8)}</span>
+                          <Badge className={`text-xs border-0 ${riskColors[item.riskLevel] ?? riskColors.medium}`}>{item.riskLevel.toUpperCase()} — {item.riskScore}/100</Badge>
+                          <Badge className="text-xs border-0 bg-muted text-muted-foreground">{item.chain}</Badge>
+                          {item.checkedAt && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" />{item.checkedAt}</span>}
+                        </div>
+                        <code className="text-xs text-muted-foreground break-all">{item.address.substring(0, 42)}{item.address.length > 42 ? "..." : ""}</code>
+                        <div className="flex gap-1 mt-1.5 flex-wrap">
+                          {item.flags.slice(0, 2).map((f, i) => (
+                            <Badge key={i} className="text-[10px] border-0 bg-muted text-muted-foreground">{f}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {item.saved && <Badge className="text-xs border-0 bg-blue-50 text-blue-700">Decided</Badge>}
+                        <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedItem(item)}>
+                          <Eye className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                ))
+              )}
             </div>
           </TabsContent>
 
