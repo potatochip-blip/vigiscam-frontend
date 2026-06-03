@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -11,9 +12,11 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   CheckSquare, AlertTriangle, XCircle, CheckCircle, Clock,
-  Archive, Users, Download, Eye, Shield, Search
+  Archive, Users, Download, Eye, Shield, Search, Loader2
 } from "lucide-react"
 
 const claimCategories = [
@@ -31,66 +34,163 @@ const claimCategories = [
   { value: "other", label: "Other" },
 ]
 
-const verificationResults = [
-  {
-    id: "CV-001",
-    category: "Oil Rig / Construction Worker Overseas",
-    claimSummary: "Man on oil rig in Gulf of Mexico claims to need money sent for emergency tools",
-    riskScore: 94,
-    riskLevel: "critical",
-    checkedAt: "2h ago",
-    breakdown: [
-      { label: "Story consistency", score: 12, max: 25, note: "Multiple contradictions in timeline" },
-      { label: "Identity verifiability", score: 4, max: 25, note: "No verifiable professional profile or employer" },
-      { label: "Communication pattern", score: 8, max: 25, note: "Grooming language, fast emotional escalation" },
-      { label: "Request pattern", score: 5, max: 25, note: "Urgent financial request after short relationship" },
-    ],
-    aiSummary: "This claim matches known oil rig romance scam scripts. Over 3,400 similar cases in VIGISCAM™ database. Do not send money.",
-  },
-  {
-    id: "CV-002",
-    category: "Government / Authority",
-    claimSummary: "Caller claims to be from the AFP and says a warrant has been issued for my arrest",
-    riskScore: 98,
-    riskLevel: "critical",
-    checkedAt: "1 day ago",
-    breakdown: [
-      { label: "Story consistency", score: 5, max: 25, note: "AFP never contacts by phone about warrants" },
-      { label: "Identity verifiability", score: 2, max: 25, note: "Number is spoofed — not AFP" },
-      { label: "Communication pattern", score: 6, max: 25, note: "Fear and urgency pressure tactics" },
-      { label: "Request pattern", score: 3, max: 25, note: "Requesting gift cards for 'court fees'" },
-    ],
-    aiSummary: "Classic government impersonation threat scam. Authorities never demand immediate payment to avoid arrest. Hang up immediately.",
-  },
-  {
-    id: "CV-003",
-    category: "Inheritance / Estate",
-    claimSummary: "Lawyer claims I am entitled to $1.2M inheritance from a deceased relative I have never heard of",
-    riskScore: 91,
-    riskLevel: "critical",
-    checkedAt: "3 days ago",
-    breakdown: [
-      { label: "Story consistency", score: 8, max: 25, note: "No verifiable deceased person or estate" },
-      { label: "Identity verifiability", score: 6, max: 25, note: "Lawyer firm untraceable" },
-      { label: "Communication pattern", score: 10, max: 25, note: "Pressure to keep secret" },
-      { label: "Request pattern", score: 7, max: 25, note: "Advance fee required" },
-    ],
-    aiSummary: "Advance fee fraud (419 scam). No legitimate inheritance requires upfront payment from the beneficiary.",
-  },
-]
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type ClaimRow = {
+  id: string
+  claimType: string
+  subject: unknown
+  domainAgeDays?: number | null
+  locationMismatch?: boolean
+  imageReuseDetected?: boolean
+  scamPhraseScore?: number | null
+  paymentPressure?: boolean
+  secrecyDetected?: boolean
+  urgencyDetected?: boolean
+  riskScore: number
+  riskLevel: string
+  decision?: string
+  createdAt?: string
+}
+
+type BreakdownItem = { label: string; score: number; max: number; note: string }
+
+type DisplayClaim = {
+  id: string
+  category: string
+  claimSummary: string
+  riskScore: number
+  riskLevel: string
+  checkedAt: string
+  breakdown: BreakdownItem[]
+  aiSummary: string
+}
+
+// Frontend category value -> backend ClaimVerifyType enum.
+const CATEGORY_TO_TYPE: Record<string, string> = {
+  romance: "ROMANCE",
+  business: "BUSINESS_PARTNERSHIP",
+  charity: "CHARITY",
+  hospital: "HOSPITAL",
+  "oil-rig": "OIL_PROJECT",
+  inheritance: "INHERITANCE",
+  government: "GOVERNMENT",
+  immigration: "IMMIGRATION",
+  job: "JOB",
+  investment: "INVESTMENT",
+  crypto: "OTHER",
+  other: "OTHER",
+}
+
+function cvTitle(s?: string | null): string {
+  return (s ?? "").toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function cvTimeAgo(iso?: string): string {
+  if (!iso) return ""
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (isNaN(s)) return ""
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60); if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24); return d === 1 ? "1 day ago" : `${d} days ago`
+}
+
+function subjectSummary(subject: unknown): string {
+  if (subject && typeof subject === "object") {
+    const s = subject as Record<string, unknown>
+    const cand = s.note ?? s.claim ?? s.narrative ?? s.description ?? s.summary ?? s.name
+    if (typeof cand === "string" && cand) return cand
+    const vals = Object.values(s).filter((v) => typeof v === "string") as string[]
+    if (vals.length) return vals.join(" · ")
+  }
+  return "Claim verification"
+}
+
+function buildBreakdown(r: ClaimRow): BreakdownItem[] {
+  const out: BreakdownItem[] = [
+    { label: "Overall risk", score: r.riskScore ?? 0, max: 100, note: `${cvTitle(r.riskLevel)} risk level` },
+  ]
+  if (r.scamPhraseScore != null)
+    out.push({ label: "Scam-phrase signal", score: r.scamPhraseScore, max: 100, note: "NLP analysis of the claim narrative" })
+  if (r.domainAgeDays != null)
+    out.push({ label: "Domain age", score: Math.min(r.domainAgeDays, 365), max: 365, note: `${r.domainAgeDays} days old` })
+  return out
+}
+
+function claimAiSummary(r: ClaimRow): string {
+  const flags = [
+    r.paymentPressure && "payment pressure",
+    r.secrecyDetected && "secrecy",
+    r.urgencyDetected && "urgency",
+    r.locationMismatch && "location mismatch",
+    r.imageReuseDetected && "reused profile images",
+  ].filter(Boolean) as string[]
+  let s = `${cvTitle(r.riskLevel)} risk (${r.riskScore}/100).`
+  s += flags.length ? ` Detected: ${flags.join(", ")}.` : " No high-risk signals detected."
+  if (r.decision && r.decision !== "PENDING") s += ` Outcome: ${cvTitle(r.decision)}.`
+  return s
+}
+
+function mapClaim(r: ClaimRow): DisplayClaim {
+  return {
+    id: r.id,
+    category: cvTitle(r.claimType),
+    claimSummary: subjectSummary(r.subject),
+    riskScore: r.riskScore,
+    riskLevel: (r.riskLevel ?? "medium").toLowerCase(),
+    checkedAt: cvTimeAgo(r.createdAt),
+    breakdown: buildBreakdown(r),
+    aiSummary: claimAiSummary(r),
+  }
+}
+
+async function fetchClaimHistory(): Promise<DisplayClaim[]> {
+  const { data, error } = await backend.GET("/api/v1/claimverify/history")
+  if (error || !data) throw new Error("Could not load verification history")
+  return (data as unknown as ClaimRow[]).map(mapClaim)
+}
+
+const RISK_PANEL: Record<string, { border: string; bg: string; text: string; badge: string; heading: string }> = {
+  critical: { border: "border-red-300", bg: "bg-red-50", text: "text-red-800", badge: "bg-red-100 text-red-700", heading: "HIGH RISK — Likely a Scam" },
+  high: { border: "border-red-300", bg: "bg-red-50", text: "text-red-800", badge: "bg-red-100 text-red-700", heading: "HIGH RISK — Likely a Scam" },
+  medium: { border: "border-yellow-300", bg: "bg-yellow-50", text: "text-yellow-800", badge: "bg-yellow-100 text-yellow-700", heading: "CAUTION — Some Risk Signals" },
+  low: { border: "border-green-300", bg: "bg-green-50", text: "text-green-800", badge: "bg-green-100 text-green-700", heading: "LOW RISK — No Strong Scam Signals" },
+}
 
 export default function ClaimVerifyPage() {
-  const [category, setCategory] = useState("")
-  const [verifying, setVerifying] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<typeof verificationResults[0] | null>(null)
-  const [selectedResult, setSelectedResult] = useState<typeof verificationResults[0] | null>(null)
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading, mutate } = useSWR(
+    isAuthenticated ? "claimverify-history" : null,
+    fetchClaimHistory,
+  )
+  const verificationResults = data ?? []
 
-  const runVerification = () => {
+  const [category, setCategory] = useState("")
+  const [claimText, setClaimText] = useState("")
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+  const [verifyResult, setVerifyResult] = useState<DisplayClaim | null>(null)
+  const [selectedResult, setSelectedResult] = useState<DisplayClaim | null>(null)
+
+  const runVerification = async () => {
     setVerifying(true)
-    setTimeout(() => {
-      setVerifyResult(verificationResults[0])
+    setVerifyError(null)
+    try {
+      const claimType = CATEGORY_TO_TYPE[category] ?? "OTHER"
+      const subject: Record<string, unknown> = { category: category || "other" }
+      if (claimText.trim()) subject.note = claimText.trim()
+      const { data: res, error: err } = await backend.POST("/api/v1/claimverify/verify", {
+        body: { claimType, subject } as never,
+      })
+      if (err || !res) throw new Error("Verification failed")
+      setVerifyResult(mapClaim(res as unknown as ClaimRow))
+      void mutate() // refresh history with the new verification
+    } catch {
+      setVerifyError("Couldn't run the verification. Please try again.")
+    } finally {
       setVerifying(false)
-    }, 2000)
+    }
   }
 
   return (
@@ -100,9 +200,9 @@ export default function ClaimVerifyPage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-4 gap-4">
           {[
-            { label: "Claims Verified", value: "3", color: "text-primary", bg: "bg-primary/10", icon: CheckSquare },
-            { label: "Scam Claims Detected", value: "3", color: "text-red-600", bg: "bg-red-50", icon: XCircle },
-            { label: "Estimated Saved", value: "$14,200", color: "text-green-600", bg: "bg-green-50", icon: Shield },
+            { label: "Claims Verified", value: String(verificationResults.length), color: "text-primary", bg: "bg-primary/10", icon: CheckSquare },
+            { label: "Scam Claims Detected", value: String(verificationResults.filter((r) => r.riskLevel === "high" || r.riskLevel === "critical").length), color: "text-red-600", bg: "bg-red-50", icon: XCircle },
+            { label: "Cleared / Low Risk", value: String(verificationResults.filter((r) => r.riskLevel === "low").length), color: "text-green-600", bg: "bg-green-50", icon: Shield },
             { label: "Avg. Verification Time", value: "< 10s", color: "text-primary", bg: "bg-primary/10", icon: Clock },
           ].map((stat, i) => {
             const Icon = stat.icon
@@ -191,23 +291,33 @@ export default function ClaimVerifyPage() {
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Describe the claim or story in your own words</Label>
                 <Textarea
+                  value={claimText}
+                  onChange={(e) => setClaimText(e.target.value)}
                   placeholder="e.g. He says he works on an oil rig in the Gulf of Mexico and needs $3,000 for emergency equipment. He has been messaging me every day for 3 weeks..."
                   className="min-h-28 text-sm"
                 />
               </div>
-              <Button className="w-full sm:w-auto" onClick={runVerification} disabled={verifying}>
-                {verifying ? "Verifying..." : "Run ClaimVerify AI™"}
+              <Button className="w-full sm:w-auto" onClick={runVerification} disabled={verifying || !category}>
+                {verifying ? (
+                  <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> Verifying...</>
+                ) : "Run ClaimVerify AI™"}
               </Button>
+              {!category && !verifyResult && (
+                <p className="text-xs text-muted-foreground">Select a claim category to run a verification.</p>
+              )}
+              {verifyError && <p className="text-sm text-destructive">{verifyError}</p>}
 
               {/* Result */}
-              {verifyResult && (
-                <div className="rounded-lg border border-red-300 bg-red-50 p-5 space-y-4">
+              {verifyResult && (() => {
+                const panel = RISK_PANEL[verifyResult.riskLevel] ?? RISK_PANEL.medium
+                return (
+                <div className={`rounded-lg border ${panel.border} ${panel.bg} p-5 space-y-4`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <XCircle className="h-5 w-5 text-red-600" />
-                      <span className="font-bold text-red-800 text-sm">HIGH RISK — Likely a Scam ({verifyResult.riskScore}/100)</span>
+                      <XCircle className={`h-5 w-5 ${panel.text}`} />
+                      <span className={`font-bold ${panel.text} text-sm`}>{panel.heading} ({verifyResult.riskScore}/100)</span>
                     </div>
-                    <Badge className="text-xs border-0 bg-red-100 text-red-700 flex-shrink-0">Critical</Badge>
+                    <Badge className={`text-xs border-0 capitalize flex-shrink-0 ${panel.badge}`}>{verifyResult.riskLevel}</Badge>
                   </div>
                   <p className="text-sm text-muted-foreground">{verifyResult.aiSummary}</p>
                   <div className="space-y-3">
@@ -235,7 +345,8 @@ export default function ClaimVerifyPage() {
                     </Button>
                   </div>
                 </div>
-              )}
+                )
+              })()}
             </Card>
           </TabsContent>
 
@@ -251,25 +362,52 @@ export default function ClaimVerifyPage() {
               </Button>
             </div>
             <div className="space-y-3">
-              {verificationResults.map((result) => (
-                <Card key={result.id} className="p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                        <span className="text-xs font-mono text-muted-foreground">{result.id}</span>
-                        <Badge className="text-xs border-0 bg-red-100 text-red-700">{result.riskLevel.toUpperCase()} — {result.riskScore}/100</Badge>
-                        <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" />{result.checkedAt}</span>
-                      </div>
-                      <p className="text-sm font-semibold text-foreground">{result.category}</p>
-                      <p className="text-sm text-muted-foreground mt-0.5 truncate">{result.claimSummary}</p>
-                      <p className="text-xs text-primary mt-1 line-clamp-2">{result.aiSummary}</p>
-                    </div>
-                    <Button size="sm" variant="ghost" className="h-8 flex-shrink-0" onClick={() => setSelectedResult(result)}>
-                      <Eye className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+              {!isAuthenticated ? (
+                <Card className="p-12 text-center text-sm text-muted-foreground">
+                  Sign in to view your verification history.
                 </Card>
-              ))}
+              ) : isLoading ? (
+                <Card className="p-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading verifications...
+                </Card>
+              ) : error ? (
+                <Card className="p-12 text-center text-sm text-destructive">
+                  Couldn&apos;t load verification history. Please try again.
+                </Card>
+              ) : verificationResults.length === 0 ? (
+                <Card className="p-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
+                    <CheckSquare className="h-6 w-6 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No verifications yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Run a claim through ClaimVerify above and your results will be saved here.
+                  </p>
+                </Card>
+              ) : (
+                verificationResults.map((result) => {
+                  const panel = RISK_PANEL[result.riskLevel] ?? RISK_PANEL.medium
+                  return (
+                    <Card key={result.id} className="p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                            <span className="text-xs font-mono text-muted-foreground">{result.id.slice(0, 8)}</span>
+                            <Badge className={`text-xs border-0 ${panel.badge}`}>{result.riskLevel.toUpperCase()} — {result.riskScore}/100</Badge>
+                            {result.checkedAt && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" />{result.checkedAt}</span>}
+                          </div>
+                          <p className="text-sm font-semibold text-foreground">{result.category}</p>
+                          <p className="text-sm text-muted-foreground mt-0.5 truncate">{result.claimSummary}</p>
+                          <p className="text-xs text-primary mt-1 line-clamp-2">{result.aiSummary}</p>
+                        </div>
+                        <Button size="sm" variant="ghost" className="h-8 flex-shrink-0" onClick={() => setSelectedResult(result)}>
+                          <Eye className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </Card>
+                  )
+                })
+              )}
             </div>
           </TabsContent>
         </Tabs>
