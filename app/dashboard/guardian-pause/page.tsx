@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -8,58 +9,80 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   Pause, Shield, Users, Archive, CheckCircle, Phone, AlertTriangle,
-  Clock, Eye, Settings, Timer, ArrowRight, XCircle, ShieldCheck
+  Clock, Eye, Settings, Timer, ArrowRight, XCircle, ShieldCheck, Loader2
 } from "lucide-react"
 
-const pauseHistory = [
-  {
-    id: "GP-001",
-    datetime: "Today, 3:14 PM",
-    triggerSource: "ScamHold AI™",
-    pressureType: "Urgency + secrecy",
-    riskLevel: "critical",
-    userAction: "Sent to trusted contact",
-    evidenceId: "EV-441",
-  },
-  {
-    id: "GP-002",
-    datetime: "Today, 1:52 PM",
-    triggerSource: "GiftCardGuard™",
-    pressureType: "Code reveal pressure",
-    riskLevel: "high",
-    userAction: "Blocked action",
-    evidenceId: "EV-438",
-  },
-  {
-    id: "GP-003",
-    datetime: "Yesterday, 6:30 PM",
-    triggerSource: "WalletGuard AI™",
-    pressureType: "Wallet switch pressure",
-    riskLevel: "high",
-    userAction: "Completed pause",
-    evidenceId: "EV-431",
-  },
-  {
-    id: "GP-004",
-    datetime: "Yesterday, 11:05 AM",
-    triggerSource: "ClaimVerify AI™",
-    pressureType: "Fake investment pressure",
-    riskLevel: "medium",
-    userAction: "Verified claim",
-    evidenceId: "EV-427",
-  },
-  {
-    id: "GP-005",
-    datetime: "2 days ago",
-    triggerSource: "EmotionShield AI™",
-    pressureType: "Romance manipulation",
-    riskLevel: "high",
-    userAction: "Blocked action",
-    evidenceId: "EV-419",
-  },
-]
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type PauseRow = {
+  id: string
+  riskLevel: string
+  triggerType: string
+  triggerSummary: string
+  status: string
+  startedAt: string
+  resolvedAt?: string | null
+  resolutionNotes?: string | null
+  evidenceEventId?: string | null
+}
+
+type DisplayPause = {
+  id: string
+  datetime: string
+  triggerSource: string
+  pressureType: string
+  riskLevel: string
+  userAction: string
+  evidenceId: string | null
+  status: string
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: "Pause active",
+  RESOLVED: "Resolved / verified",
+  CONTINUED_ANYWAY: "Continued anyway",
+  EXPIRED: "Pause expired",
+}
+
+function gpTitleCase(s: string): string {
+  return (s ?? "").toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function gpDateTime(iso?: string | null): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ""
+  const today = new Date()
+  const sameDay = d.toDateString() === today.toDateString()
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  if (sameDay) return `Today, ${time}`
+  const yest = new Date(today); yest.setDate(today.getDate() - 1)
+  if (d.toDateString() === yest.toDateString()) return `Yesterday, ${time}`
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + `, ${time}`
+}
+
+function mapPause(r: PauseRow): DisplayPause {
+  return {
+    id: r.id,
+    datetime: gpDateTime(r.startedAt),
+    triggerSource: gpTitleCase(r.triggerType),
+    pressureType: r.triggerSummary || gpTitleCase(r.triggerType),
+    riskLevel: (r.riskLevel ?? "medium").toLowerCase(),
+    userAction: r.resolutionNotes || STATUS_LABEL[r.status] || gpTitleCase(r.status),
+    evidenceId: r.evidenceEventId ?? null,
+    status: r.status,
+  }
+}
+
+async function fetchPauseHistory(): Promise<DisplayPause[]> {
+  const { data, error } = await backend.GET("/api/v1/guardian-pause/history")
+  if (error || !data) throw new Error("Could not load pause history")
+  return (data as unknown as PauseRow[]).map(mapPause)
+}
 
 const riskColors: Record<string, string> = {
   critical: "bg-red-100 text-red-700",
@@ -78,11 +101,24 @@ const reflectionQuestions = [
 ]
 
 export default function GuardianPausePage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(
+    isAuthenticated ? "guardian-pause-history" : null,
+    fetchPauseHistory,
+  )
+  const pauseHistory = data ?? []
+
   const [showCountdown, setShowCountdown] = useState(false)
   const [countdown, setCountdown] = useState(30)
   const [countdownComplete, setCountdownComplete] = useState(false)
   const [showAlert, setShowAlert] = useState(true)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Stats derived from real pause history.
+  const total = pauseHistory.length
+  const blocked = pauseHistory.filter((p) => p.status === "RESOLVED" || p.status === "EXPIRED").length
+  const continued = pauseHistory.filter((p) => p.status === "CONTINUED_ANYWAY").length
+  const activeCount = pauseHistory.filter((p) => p.status === "ACTIVE").length
 
   const startPause = () => {
     setCountdown(30)
@@ -162,10 +198,10 @@ export default function GuardianPausePage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[
-            { label: "Pauses Triggered", value: "12", color: "text-primary", bg: "bg-primary/10", icon: Pause },
-            { label: "Actions Blocked", value: "7", color: "text-red-600", bg: "bg-red-50", icon: XCircle },
-            { label: "Verified Safe", value: "3", color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
-            { label: "Est. Loss Prevented", value: "$9,200", color: "text-green-700", bg: "bg-green-50", icon: Shield },
+            { label: "Pauses Triggered", value: String(total), color: "text-primary", bg: "bg-primary/10", icon: Pause },
+            { label: "Resolved / Expired", value: String(blocked), color: "text-red-600", bg: "bg-red-50", icon: XCircle },
+            { label: "Active Now", value: String(activeCount), color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
+            { label: "Continued Anyway", value: String(continued), color: "text-green-700", bg: "bg-green-50", icon: Shield },
           ].map((stat, i) => {
             const Icon = stat.icon
             return (
@@ -229,21 +265,45 @@ export default function GuardianPausePage() {
                 <span>User Action</span>
                 <span>Evidence</span>
               </div>
-              {pauseHistory.map((row) => (
-                <div key={row.id} className="grid grid-cols-[1fr_auto_auto_auto_1fr_auto] gap-3 px-4 py-3.5 items-center text-sm hover:bg-muted/20 transition-colors">
-                  <div>
-                    <span className="text-foreground">{row.datetime}</span>
-                    <span className="block text-xs text-muted-foreground font-mono">{row.id}</span>
-                  </div>
-                  <span className="text-muted-foreground text-xs whitespace-nowrap">{row.triggerSource}</span>
-                  <span className="text-muted-foreground text-xs whitespace-nowrap">{row.pressureType}</span>
-                  <Badge className={`text-xs border-0 capitalize ${riskColors[row.riskLevel]}`}>{row.riskLevel}</Badge>
-                  <span className="text-foreground text-xs">{row.userAction}</span>
-                  <Button size="sm" variant="outline" className="h-7 text-xs px-2">
-                    <Eye className="h-3 w-3 mr-1" /> {row.evidenceId}
-                  </Button>
+              {!isAuthenticated ? (
+                <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  Sign in to view your Guardian Pause history.
                 </div>
-              ))}
+              ) : isLoading ? (
+                <div className="px-4 py-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading pause history...
+                </div>
+              ) : error ? (
+                <div className="px-4 py-12 text-center text-sm text-destructive">
+                  Couldn&apos;t load pause history. Please try again.
+                </div>
+              ) : pauseHistory.length === 0 ? (
+                <div className="px-4 py-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
+                    <ShieldCheck className="h-6 w-6 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No pauses yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Guardian Pause is armed. When VIGISCAM detects pressure or manipulation, your pauses will appear here.
+                  </p>
+                </div>
+              ) : (
+                pauseHistory.map((row) => (
+                  <div key={row.id} className="grid grid-cols-[1fr_auto_auto_auto_1fr_auto] gap-3 px-4 py-3.5 items-center text-sm hover:bg-muted/20 transition-colors">
+                    <div>
+                      <span className="text-foreground">{row.datetime}</span>
+                      <span className="block text-xs text-muted-foreground font-mono">{row.id.slice(0, 8)}</span>
+                    </div>
+                    <span className="text-muted-foreground text-xs whitespace-nowrap">{row.triggerSource}</span>
+                    <span className="text-muted-foreground text-xs whitespace-nowrap">{row.pressureType}</span>
+                    <Badge className={`text-xs border-0 capitalize ${riskColors[row.riskLevel] ?? riskColors.medium}`}>{row.riskLevel}</Badge>
+                    <span className="text-foreground text-xs">{row.userAction}</span>
+                    <Button size="sm" variant="outline" className="h-7 text-xs px-2" disabled={!row.evidenceId}>
+                      <Eye className="h-3 w-3 mr-1" /> {row.evidenceId ? row.evidenceId.slice(0, 8) : "—"}
+                    </Button>
+                  </div>
+                ))
+              )}
             </Card>
           </TabsContent>
 
