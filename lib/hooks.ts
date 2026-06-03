@@ -37,7 +37,6 @@ import {
   mockPublicDrafts,
   mockCorrectionsAppeals,
   mockSubmissions,
-  mockTakedownStatus,
 } from "./scam-intelligence-data"
 
 // ============================================================================
@@ -202,31 +201,11 @@ export function useTakedowns(params: PaginationParams & FilterParams = {}) {
   return useSWR(
     ["takedowns", params],
     async () => {
-      // TODO: Replace with real API call
-      
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockTakedownStatus]
-      
-      if (params.search) {
-        const search = params.search.toLowerCase()
-        data = data.filter((td) => td.indicator.toLowerCase().includes(search))
+      const res = await api.scamIntelligence.getTakedowns(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "takedowns failed")
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return res.data
     },
     SWR_CONFIG
   )

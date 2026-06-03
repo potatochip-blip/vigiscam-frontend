@@ -59,7 +59,7 @@ import type {
   OrganizationSettings,
 } from './types';
 import { backend, setAuthToken } from './backend';
-import { mapAlert, mapRegistryEntry, toUpperSnake } from './mappers';
+import { mapAlert, mapIndicatorType, mapRegistryEntry, toUpperSnake } from './mappers';
 
 // ============================================================================
 // HELPERS
@@ -73,6 +73,25 @@ function fail(code: string, message: string): ApiResponse<never> {
   return {
     success: false,
     error: { code, message, timestamp: new Date().toISOString() },
+  };
+}
+
+/** Wrap a fully-materialized array into the frontend's pagination envelope
+ *  (the admin/intelligence backend endpoints return plain arrays, capped). */
+function paginate<T>(items: T[], params: PaginationParams = {}): PaginatedResponse<T> {
+  const page = params.page ?? 1;
+  const limit = params.limit ?? 20;
+  const start = (page - 1) * limit;
+  return {
+    data: items.slice(start, start + limit),
+    pagination: {
+      page,
+      limit,
+      total: items.length,
+      totalPages: Math.max(1, Math.ceil(items.length / limit)),
+      hasNext: start + limit < items.length,
+      hasPrev: page > 1,
+    },
   };
 }
 
@@ -369,8 +388,44 @@ export const scamIntelligenceApi = {
     );
   },
 
-  getTakedowns: (_p?: PaginationParams & FilterParams) =>
-    notImplemented<PaginatedResponse<RegistryEntry>>('getTakedowns'),
+  // CP-13 — wired to the admin takedown tracker.
+  async getTakedowns(
+    params: PaginationParams & FilterParams = {},
+  ): Promise<ApiResponse<PaginatedResponse<RegistryEntry>>> {
+    const { data, error, response } = await backend.GET('/api/v1/intelligence/takedowns');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const rows = data as unknown as Array<{
+      id: string;
+      status?: string;
+      indicatorValue?: string;
+      indicatorType?: string;
+      createdAt?: string;
+      updatedAt?: string;
+    }>;
+    const items: RegistryEntry[] = rows.map((r) => ({
+      id: r.id,
+      indicator: r.indicatorValue ?? r.id,
+      type: (r.indicatorType ? mapIndicatorType(r.indicatorType) : 'other') as RegistryEntry['type'],
+      scamFamily: 'other' as RegistryEntry['scamFamily'],
+      status: 'verified-malicious' as RegistryEntry['status'],
+      firstSeen: r.createdAt ?? new Date(0).toISOString(),
+      lastSeen: r.updatedAt ?? new Date(0).toISOString(),
+      caseCount: 0,
+      takedownStatus: ((r.status ?? 'pending')
+        .toLowerCase()
+        .replace(/_/g, '-')) as RegistryEntry['takedownStatus'],
+      region: 'global',
+      summary: `Takedown status: ${r.status ?? 'PENDING'}`,
+      commonPhrases: [],
+      relatedIndicators: [],
+      dateVerified: r.updatedAt ?? new Date(0).toISOString(),
+      recommendedAction: '',
+      evidenceSummary: '',
+    }));
+    return ok(paginate(items, params));
+  },
 };
 
 // ============================================================================
