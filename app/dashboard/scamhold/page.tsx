@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from "react"
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -9,83 +10,112 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   Lock, AlertTriangle, CheckCircle, Clock, Shield, Phone, CreditCard,
-  Archive, Users, Search, Filter, Download, Eye, XCircle, ArrowRight, Pause
+  Archive, Users, Search, Filter, Download, Eye, XCircle, ArrowRight, Pause, Loader2
 } from "lucide-react"
 
-const riskyActions = [
-  {
-    id: "SH-001",
-    type: "Bank Transfer",
-    description: "Transfer $4,800 to 'Investment Account' — new payee, never used before",
-    risk: "critical",
-    riskScore: 97,
-    trigger: "New payee + caller pressure language detected",
-    time: "2 min ago",
-    status: "held",
-    amount: "$4,800",
-    destination: "BSB 062-001 Acct 12345678",
-    caller: "+61 2 9876 5432",
-    callerFlag: "Impersonating ANZ Fraud Team",
-  },
-  {
-    id: "SH-002",
-    type: "Gift Card Purchase",
-    description: "Request to purchase $500 Google Play gift cards at Woolworths",
-    risk: "high",
-    riskScore: 89,
-    trigger: "Gift card request during phone call — ATO impersonation script match",
-    time: "1h ago",
-    status: "held",
-    amount: "$500",
-    destination: "Google Play (gift card)",
-    caller: "+61 1300 555 987",
-    callerFlag: "Impersonating Australian Taxation Office",
-  },
-  {
-    id: "SH-003",
-    type: "Remote Access Approval",
-    description: "AnyDesk connection request from unknown party ID 492-837-124",
-    risk: "critical",
-    riskScore: 95,
-    trigger: "Remote access during financial conversation",
-    time: "3h ago",
-    status: "blocked",
-    amount: "N/A",
-    destination: "AnyDesk ID: 492-837-124",
-    caller: "+1 800 555 0199",
-    callerFlag: "Impersonating Microsoft Support",
-  },
-  {
-    id: "SH-004",
-    type: "Crypto Purchase",
-    description: "Attempt to send 0.42 ETH to external wallet via Coinbase",
-    risk: "high",
-    riskScore: 82,
-    trigger: "Crypto transfer prompted by romance contact over 6 weeks",
-    time: "Yesterday",
-    status: "released",
-    amount: "0.42 ETH (~$1,240)",
-    destination: "0x4f3a...d91c",
-    caller: "alex_investor_sg (Instagram)",
-    callerFlag: "Suspected pig-butchering romance",
-  },
-  {
-    id: "SH-005",
-    type: "Password Reset",
-    description: "Bank portal password reset while caller remained on line",
-    risk: "medium",
-    riskScore: 71,
-    trigger: "Credential change during active call",
-    time: "2 days ago",
-    status: "reviewed",
-    amount: "N/A",
-    destination: "CommBank portal",
-    caller: "+61 2 1111 2222",
-    callerFlag: "Possible social engineering",
-  },
-]
+// ── Backend → display mapping ───────────────────────────────────────────────
+
+type ScamHoldRow = {
+  id: string
+  transactionType: string
+  amountMinor: number | string
+  currency: string
+  recipient: string
+  recipientRisk: string
+  urgencyDetected: boolean
+  secrecyDetected: boolean
+  activeCommunication: boolean
+  riskScore: number
+  riskLevel: string
+  status: string
+  decisionNotes?: string | null
+  createdAt?: string
+  decidedAt?: string | null
+}
+
+type DisplayAction = {
+  id: string
+  type: string
+  description: string
+  risk: string
+  riskScore: number
+  trigger: string
+  time: string
+  status: string
+  statusLabel: string
+  amount: string
+  destination: string
+  caller: string
+  callerFlag: string
+}
+
+const STATUS_MAP: Record<string, { key: string; label: string }> = {
+  PENDING: { key: "held", label: "Pending" },
+  BLOCK: { key: "blocked", label: "Blocked" },
+  RELEASE_AFTER_VERIFICATION: { key: "released", label: "Released" },
+  CONTINUE_ANYWAY: { key: "released", label: "Continued" },
+  SEND_TO_TRUSTED_CONTACT: { key: "reviewed", label: "Sent to Contact" },
+  SAVE_ONLY: { key: "reviewed", label: "Saved" },
+}
+
+function titleCase(s: string): string {
+  return s.toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function formatAmount(minor: number | string, currency: string): string {
+  const n = Number(minor)
+  if (!isFinite(n) || n <= 0) return "N/A"
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(n / 100)
+  } catch {
+    return `${(n / 100).toFixed(2)} ${currency}`
+  }
+}
+
+function timeAgo(iso?: string | null): string {
+  if (!iso) return ""
+  const then = new Date(iso).getTime()
+  if (isNaN(then)) return ""
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24)
+  return d === 1 ? "Yesterday" : `${d} days ago`
+}
+
+function mapRow(r: ScamHoldRow): DisplayAction {
+  const status = STATUS_MAP[r.status] ?? { key: "reviewed", label: titleCase(r.status ?? "Pending") }
+  const flags: string[] = []
+  if (r.urgencyDetected) flags.push("urgency")
+  if (r.secrecyDetected) flags.push("secrecy")
+  if (r.activeCommunication) flags.push("active call")
+  const trigger = flags.length
+    ? `Detected: ${flags.join(" + ")}`
+    : `Flagged by ScamHold risk rules (score ${r.riskScore})`
+  const amount = formatAmount(r.amountMinor, r.currency)
+  return {
+    id: r.id,
+    type: titleCase(r.transactionType),
+    description: `${amount === "N/A" ? "Transaction" : amount} to ${r.recipient}`,
+    risk: (r.riskLevel ?? "medium").toLowerCase(),
+    riskScore: r.riskScore,
+    trigger,
+    time: timeAgo(r.createdAt ?? r.decidedAt),
+    status: status.key,
+    statusLabel: status.label,
+    amount,
+    destination: r.recipient,
+    caller: r.decisionNotes ?? "—",
+    callerFlag: r.recipientRisk && r.recipientRisk !== "UNKNOWN" ? titleCase(r.recipientRisk) : "Risk flagged",
+  }
+}
 
 const riskColors: Record<string, string> = {
   critical: "bg-red-100 text-red-700",
@@ -101,30 +131,46 @@ const statusColors: Record<string, string> = {
   reviewed: "bg-muted text-muted-foreground",
 }
 
+async function fetchHistory(): Promise<DisplayAction[]> {
+  const { data, error } = await backend.GET("/api/v1/scamhold/history")
+  if (error || !data) throw new Error("Could not load ScamHold history")
+  return (data as unknown as ScamHoldRow[]).map(mapRow)
+}
+
 export default function ScamHoldPage() {
-  const [selectedAction, setSelectedAction] = useState<typeof riskyActions[0] | null>(null)
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(
+    isAuthenticated ? "scamhold-history" : null,
+    fetchHistory,
+  )
+  const [selectedAction, setSelectedAction] = useState<DisplayAction | null>(null)
   const [showAlert, setShowAlert] = useState(true)
   const [filter, setFilter] = useState("all")
 
-  const filtered = riskyActions.filter(a => filter === "all" || a.status === filter)
+  const actions = data ?? []
+  const filtered = actions.filter((a) => filter === "all" || a.status === filter)
+
+  // Stats derived from real data.
+  const activeHolds = actions.filter((a) => a.status === "held").length
+  const blocked = actions.filter((a) => a.status === "blocked").length
+  const topAlert = actions.find((a) => a.status === "held") ?? null
 
   return (
     <PageLayout role="individual" title="ScamHold AI™" subtitle="Smart holds on risky financial actions before harm occurs">
       <div className="max-w-6xl mx-auto space-y-6">
 
-        {/* High-Risk Alert Banner */}
-        {showAlert && (
+        {/* High-Risk Alert Banner — only when there's a real active hold */}
+        {showAlert && topAlert && (
           <Card className="p-4 border-red-300 bg-red-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <p className="font-bold text-red-800 text-sm">High-Risk Payment Detected — Action Required</p>
+                <p className="font-bold text-red-800 text-sm">High-Risk Action Held — Review Required</p>
                 <p className="text-sm text-red-700 mt-0.5">
-                  A $4,800 bank transfer has been flagged and paused. The caller is impersonating ANZ&apos;s fraud team.
-                  Do not proceed until verified.
+                  {topAlert.description} was flagged ({topAlert.callerFlag}). Do not proceed until verified.
                 </p>
                 <div className="flex gap-2 mt-3 flex-wrap">
-                  <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white h-8" onClick={() => setSelectedAction(riskyActions[0])}>
+                  <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white h-8" onClick={() => setSelectedAction(topAlert)}>
                     <Eye className="h-3.5 w-3.5 mr-1" /> Review Hold
                   </Button>
                   <Button size="sm" variant="outline" className="h-8 border-red-300 text-red-700">
@@ -142,10 +188,10 @@ export default function ScamHoldPage() {
         {/* Stats */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[
-            { label: "Active Holds", value: "2", color: "text-red-600", bg: "bg-red-50", icon: Pause },
-            { label: "Blocked Today", value: "1", color: "text-destructive", bg: "bg-destructive/10", icon: XCircle },
-            { label: "Total Saved (Est.)", value: "$6,540", color: "text-green-600", bg: "bg-green-50", icon: Shield },
-            { label: "Hold Accuracy", value: "96%", color: "text-primary", bg: "bg-primary/10", icon: CheckCircle },
+            { label: "Active Holds", value: String(activeHolds), color: "text-red-600", bg: "bg-red-50", icon: Pause },
+            { label: "Blocked", value: String(blocked), color: "text-destructive", bg: "bg-destructive/10", icon: XCircle },
+            { label: "Total Logged", value: String(actions.length), color: "text-primary", bg: "bg-primary/10", icon: Shield },
+            { label: "Reviewed", value: String(actions.filter((a) => a.status === "reviewed").length), color: "text-green-600", bg: "bg-green-50", icon: CheckCircle },
           ].map((stat, i) => {
             const Icon = stat.icon
             return (
@@ -163,7 +209,6 @@ export default function ScamHoldPage() {
         <Tabs defaultValue="holds">
           <TabsList>
             <TabsTrigger value="holds">Risky Action Log</TabsTrigger>
-            <TabsTrigger value="trusted">Trusted Contact Review</TabsTrigger>
             <TabsTrigger value="settings">Hold Settings</TabsTrigger>
           </TabsList>
 
@@ -200,54 +245,54 @@ export default function ScamHoldPage() {
                 <span>Status</span>
                 <span>Actions</span>
               </div>
-              {filtered.map((action) => (
-                <div key={action.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-4 py-4 items-center hover:bg-muted/20 transition-colors">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="text-xs font-mono text-muted-foreground">{action.id}</span>
-                      <span className="text-sm font-semibold text-foreground">{action.type}</span>
-                      <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" /> {action.time}</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground truncate">{action.description}</p>
-                    <p className="text-xs text-primary mt-0.5">{action.trigger}</p>
-                  </div>
-                  <Badge className={`text-xs border-0 ${riskColors[action.risk]}`}>{action.riskScore}</Badge>
-                  <Badge className={`text-xs border-0 capitalize ${statusColors[action.status]}`}>{action.status}</Badge>
-                  <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAction(action)}>
-                    <Eye className="h-3.5 w-3.5 mr-1" /> Review
-                  </Button>
-                </div>
-              ))}
-            </Card>
-          </TabsContent>
 
-          <TabsContent value="trusted" className="mt-4">
-            <Card className="p-6 space-y-4">
-              <div className="flex items-center gap-3 mb-2">
-                <Users className="h-5 w-5 text-primary" />
-                <h3 className="text-base font-bold text-foreground">Trusted Contact Review Queue</h3>
-              </div>
-              <p className="text-sm text-muted-foreground">These contacts have been notified of holds and can approve or flag the action on your behalf.</p>
-              {[
-                { name: "Margaret Smith", relation: "Mother", status: "Notified", time: "2 min ago", action: "SH-001 — $4,800 Transfer" },
-                { name: "James Smith", relation: "Son", status: "Reviewed — Flagged", time: "1h ago", action: "SH-002 — Gift Card Purchase" },
-              ].map((c, i) => (
-                <div key={i} className="flex items-center justify-between p-4 bg-muted/40 rounded-lg gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                      <span className="font-bold text-primary text-sm">{c.name[0]}</span>
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">{c.name} <span className="text-muted-foreground font-normal">— {c.relation}</span></p>
-                      <p className="text-xs text-muted-foreground">{c.action}</p>
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <Badge className={`text-xs border-0 ${c.status.includes("Flagged") ? "bg-red-100 text-red-700" : "bg-blue-50 text-blue-700"}`}>{c.status}</Badge>
-                    <p className="text-xs text-muted-foreground mt-1">{c.time}</p>
-                  </div>
+              {/* States */}
+              {!isAuthenticated ? (
+                <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  Sign in to view your ScamHold activity.
                 </div>
-              ))}
+              ) : isLoading ? (
+                <div className="px-4 py-12 flex items-center justify-center text-sm text-muted-foreground gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading your held actions...
+                </div>
+              ) : error ? (
+                <div className="px-4 py-12 text-center text-sm text-destructive">
+                  Couldn&apos;t load ScamHold history. Please try again.
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="px-4 py-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-3">
+                    <Shield className="h-6 w-6 text-green-600" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No risky actions held</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {actions.length === 0
+                      ? "ScamHold is active. Flagged financial actions will appear here before they complete."
+                      : "No actions match this filter."}
+                  </p>
+                </div>
+              ) : (
+                filtered.map((action) => (
+                  <div key={action.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-4 py-4 items-center hover:bg-muted/20 transition-colors">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="text-xs font-mono text-muted-foreground">{action.id.slice(0, 8)}</span>
+                        <span className="text-sm font-semibold text-foreground">{action.type}</span>
+                        {action.time && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="h-3 w-3" /> {action.time}</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground truncate">{action.description}</p>
+                      <p className="text-xs text-primary mt-0.5">{action.trigger}</p>
+                    </div>
+                    <Badge className={`text-xs border-0 ${riskColors[action.risk] ?? riskColors.medium}`}>{action.riskScore}</Badge>
+                    <Badge className={`text-xs border-0 capitalize ${statusColors[action.status] ?? statusColors.reviewed}`}>{action.statusLabel}</Badge>
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAction(action)}>
+                      <Eye className="h-3.5 w-3.5 mr-1" /> Review
+                    </Button>
+                  </div>
+                ))
+              )}
             </Card>
           </TabsContent>
 
@@ -258,10 +303,10 @@ export default function ScamHoldPage() {
                 <h3 className="text-base font-bold text-foreground">ScamHold AI™ Settings</h3>
               </div>
               {[
-                { label: "Auto-hold bank transfers over", type: "select", options: ["$500", "$1,000", "$2,000", "$5,000"], default: "$1,000" },
-                { label: "Transaction types monitored", type: "select", options: ["All types", "Bank transfers only", "Crypto only", "Gift cards only"], default: "All types" },
-                { label: "Hold duration before auto-release", type: "select", options: ["2 hours", "4 hours", "24 hours", "Until manually released"], default: "4 hours" },
-                { label: "Notify trusted contacts on hold", type: "select", options: ["Immediately", "After 15 min", "Never"], default: "Immediately" },
+                { label: "Auto-hold bank transfers over", options: ["$500", "$1,000", "$2,000", "$5,000"], default: "$1,000" },
+                { label: "Transaction types monitored", options: ["All types", "Bank transfers only", "Crypto only", "Gift cards only"], default: "All types" },
+                { label: "Hold duration before auto-release", options: ["2 hours", "4 hours", "24 hours", "Until manually released"], default: "4 hours" },
+                { label: "Notify trusted contacts on hold", options: ["Immediately", "After 15 min", "Never"], default: "Immediately" },
               ].map((s, i) => (
                 <div key={i} className="flex items-center justify-between gap-4">
                   <label className="text-sm font-medium text-foreground">{s.label}</label>
@@ -270,7 +315,7 @@ export default function ScamHoldPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {s.options.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                      {s.options.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
@@ -296,11 +341,10 @@ export default function ScamHoldPage() {
           {selectedAction && (
             <div className="space-y-4">
               <div className="bg-muted/50 rounded-lg p-4 space-y-2.5 text-sm">
-                <div className="flex justify-between"><span className="text-muted-foreground">Case ID</span><span className="font-mono font-semibold">{selectedAction.id}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Case ID</span><span className="font-mono font-semibold">{selectedAction.id.slice(0, 8)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Amount / Target</span><span className="font-semibold">{selectedAction.amount}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Destination</span><span className="font-semibold text-right max-w-52 truncate">{selectedAction.destination}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Caller / Contact</span><span className="font-semibold">{selectedAction.caller}</span></div>
-                <div className="flex justify-between items-start gap-2"><span className="text-muted-foreground shrink-0">AI Flag</span><Badge className="bg-red-100 text-red-700 border-0 text-xs text-right">{selectedAction.callerFlag}</Badge></div>
+                <div className="flex justify-between items-start gap-2"><span className="text-muted-foreground shrink-0">Risk Flag</span><Badge className="bg-red-100 text-red-700 border-0 text-xs text-right">{selectedAction.callerFlag}</Badge></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Risk Score</span><span className={`font-bold ${selectedAction.riskScore >= 90 ? "text-red-600" : "text-orange-600"}`}>{selectedAction.riskScore}/100</span></div>
               </div>
               <p className="text-sm text-muted-foreground bg-yellow-50 border border-yellow-200 rounded-lg p-3">
