@@ -5,10 +5,24 @@ import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 import {
   Eye, Play, AlertTriangle, CheckCircle, Archive, Download,
   Monitor, Phone, CreditCard, Heart, Shield, Cpu, TrendingUp, ChevronRight
 } from "lucide-react"
+
+// Each authored simulation maps to a backend ScamMirrorPersona so running it
+// records a real, tracked ScamMirrorSession (the scripts below are authored
+// training curriculum, not user data).
+const SIM_PERSONA: Record<string, string> = {
+  "SIM-001": "TECH_SUPPORT",
+  "SIM-002": "GOVERNMENT",
+  "SIM-003": "ROMANCE",
+  "SIM-004": "BANK_IMPERSONATION",
+  "SIM-005": "EMPLOYER",
+  "SIM-006": "INVESTMENT",
+}
 
 const simulations = [
   {
@@ -128,18 +142,45 @@ const simulations = [
 ]
 
 export default function ScamMirrorPage() {
+  const { isAuthenticated } = useAuth()
   const [activeSimId, setActiveSimId] = useState<string | null>(null)
   const [activeStep, setActiveStep] = useState(0)
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const activeSim = simulations.find(s => s.id === activeSimId)
 
-  const startSim = (id: string) => {
+  const startSim = async (id: string) => {
     setActiveSimId(id)
     setActiveStep(0)
+    setSessionId(null)
+    // Record a real, tracked session (best-effort; never blocks the trainer).
+    if (!isAuthenticated) return
+    const sim = simulations.find(s => s.id === id)
+    if (!sim) return
+    try {
+      const { data } = await backend.POST("/api/v1/scammirror/start", {
+        body: { persona: SIM_PERSONA[id] ?? "OTHER", scenario: sim.description } as never,
+      })
+      if (data) setSessionId((data as { id: string }).id)
+    } catch {
+      /* session tracking is best-effort */
+    }
+  }
+
+  const endSession = () => {
+    if (!sessionId) return
+    // learned=true is the backend default → records ENDED_LEARNED for the
+    // ScamScript Genome. Best-effort; ignore failures.
+    void backend
+      .POST("/api/v1/scammirror/{id}/end", { params: { path: { id: sessionId } } })
+      .catch(() => {})
+    setSessionId(null)
   }
 
   const nextStep = () => {
     if (activeSim && activeStep < activeSim.script.length - 1) {
-      setActiveStep(s => s + 1)
+      const next = activeStep + 1
+      setActiveStep(next)
+      if (next === activeSim.script.length - 1) endSession()
     }
   }
 
@@ -172,7 +213,7 @@ export default function ScamMirrorPage() {
                     <Monitor className="h-4 w-4 text-primary" />
                     <span className="text-sm font-bold text-foreground">{activeSim.title}</span>
                   </div>
-                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => setActiveSimId(null)}>
+                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { endSession(); setActiveSimId(null) }}>
                     Exit Simulation
                   </Button>
                 </div>
