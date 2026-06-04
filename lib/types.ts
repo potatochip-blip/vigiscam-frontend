@@ -404,6 +404,34 @@ export interface CaseNote {
 
 export type ReviewDecision = "approve" | "reject" | "request-more-evidence" | "escalate"
 
+// ============================================================================
+// IDENTITY COLLISION GRAPH (consumer)
+// ============================================================================
+
+export type CollisionRiskBand = "critical" | "high" | "medium" | "low"
+
+export interface CollisionNode {
+  type: string
+  value: string
+  role: string
+  risk: CollisionRiskBand
+}
+
+/** Consumer-safe collision result from POST /identity-collision/search. */
+export interface IdentityCollisionResult {
+  found: boolean
+  query: string
+  queryType: string
+  matchCount: number
+  clusterName: string | null
+  riskScore: number
+  nodes: CollisionNode[]
+  victimReports: number
+  linkedClusters: string[]
+  firstSeen: string | null
+  lastActive: string | null
+}
+
 export interface VerificationQueueItem {
   id: string
   submissionId: string

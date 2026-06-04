@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from "react"
+import { api } from "@/lib/api-client"
+import type { IdentityCollisionResult } from "@/lib/types"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -25,28 +27,6 @@ const searchTypes = [
   { value: "voice", label: "Voice Sample", icon: Mic },
   { value: "phrase", label: "Script Phrase", icon: Mail },
 ]
-
-const mockCollisionResult = {
-  query: "alex_investor_sg",
-  queryType: "Social Media Handle",
-  matchCount: 4,
-  clusterName: "Romance Crypto Investment Grooming Cluster",
-  riskScore: 88,
-  nodes: [
-    { type: "handle", value: "alex_investor_sg (Instagram)", role: "Primary contact", risk: "critical" },
-    { type: "handle", value: "alex.chen.sg (Facebook)", role: "Alt identity", risk: "high" },
-    { type: "phone", value: "+65 8888 0123", role: "Contact number", risk: "high" },
-    { type: "wallet", value: "0x4f3a9c2d...example", role: "Crypto destination", risk: "critical" },
-    { type: "domain", value: "coinvest-returns.example.io", role: "Investment platform", risk: "critical" },
-    { type: "image", value: "profile_hash_af92c (stock photo match — 14 scam profiles)", role: "Profile photo reuse", risk: "critical" },
-    { type: "email", value: "alex.c.invest@proton.me", role: "Email used", risk: "medium" },
-    { type: "phrase", value: '"I only share this with people I truly trust"', role: "Script phrase match", risk: "high" },
-  ],
-  victimReports: 14,
-  linkedClusters: ["Romance Crypto Investment Grooming Cluster", "Southeast Asia Pig-Butchering Network"],
-  firstSeen: "2025-08-14",
-  lastActive: "2026-05-14",
-}
 
 const searchHistory = [
   {
@@ -100,14 +80,26 @@ export default function IdentityGraphPage() {
   const [searchType, setSearchType] = useState("handle")
   const [query, setQuery] = useState("")
   const [searching, setSearching] = useState(false)
-  const [result, setResult] = useState<typeof mockCollisionResult | null>(null)
+  const [result, setResult] = useState<IdentityCollisionResult | null>(null)
+  const [searchError, setSearchError] = useState<string | null>(null)
 
-  const runSearch = () => {
+  const runSearch = async () => {
+    if (!query.trim() || searching) return
     setSearching(true)
-    setTimeout(() => {
-      setResult(mockCollisionResult)
+    setSearchError(null)
+    setResult(null)
+    try {
+      const res = await api.scamIntelligence.searchIdentityCollision(query.trim(), searchType)
+      if (!res.success || !res.data) {
+        setSearchError(res.error?.message ?? "Search failed. Please try again.")
+      } else {
+        setResult(res.data)
+      }
+    } catch {
+      setSearchError("Search failed. Please try again.")
+    } finally {
       setSearching(false)
-    }, 2000)
+    }
   }
 
   return (
@@ -184,8 +176,29 @@ export default function IdentityGraphPage() {
                 </div>
               </div>
 
+              {/* Error */}
+              {searchError && (
+                <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0" />
+                  <span className="text-sm text-red-800">{searchError}</span>
+                </div>
+              )}
+
+              {/* No match */}
+              {result && !result.found && (
+                <div className="flex items-start gap-3 p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-green-800">No fraud-actor match found</p>
+                    <p className="text-sm text-muted-foreground">
+                      <strong className="text-foreground">&quot;{result.query}&quot;</strong> did not match any known fraud-actor cluster in the Identity Collision Graph. Stay vigilant — absence of a match is not a guarantee of safety.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Result */}
-              {result && (
+              {result && result.found && (
                 <div className="space-y-5 pt-2">
                   {/* Header */}
                   <div className="flex items-start justify-between gap-4 p-4 bg-red-50 border border-red-200 rounded-lg">

@@ -35,6 +35,7 @@ import type {
   IndicatorCheckResponse,
   IndicatorType,
   ScamFamily,
+  IdentityCollisionResult,
   RegistryEntry,
   ScamNetwork,
   // Reports
@@ -465,6 +466,22 @@ export const scamIntelligenceApi = {
       evidenceSummary: '',
     }));
     return ok(paginate(items, params));
+  },
+
+  // CP-13 — consumer-safe Identity Collision search. Returns a masked cluster
+  // (no PII / internal fields) for the dashboard identity-graph page.
+  async searchIdentityCollision(
+    query: string,
+    searchType: string,
+  ): Promise<ApiResponse<IdentityCollisionResult>> {
+    const { data, error, response } = await backend.POST(
+      '/api/v1/identity-collision/search',
+      { body: { query, searchType } as unknown as never },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(data as unknown as IdentityCollisionResult);
   },
 };
 
