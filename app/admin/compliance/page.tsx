@@ -2,21 +2,34 @@
 
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { ShieldCheck, CheckCircle } from "lucide-react"
+import { ShieldCheck, CheckCircle, Loader2, AlertTriangle, FileText } from "lucide-react"
+import { useAdminCompliance } from "@/lib/hooks"
+
+type ComplianceData = {
+  dataSubjectRequests?: unknown[]
+  retentionPolicies?: unknown[]
+  legalHolds?: unknown[]
+  openCount?: number
+}
+
+// Static platform certifications (company facts, not tenant data).
+const CERTS = [
+  { standard: "SOC 2 Type II", expires: "In progress" },
+  { standard: "ISO 27001", expires: "In progress" },
+  { standard: "GDPR Aligned", expires: "Ongoing" },
+]
 
 export default function AdminCompliancePage() {
+  const { data, isLoading, error } = useAdminCompliance()
+  const c = (data ?? {}) as ComplianceData
+
   return (
     <PageLayout role="admin" title="Compliance & Regulations" subtitle="Manage compliance requirements and certifications">
       <div className="space-y-6">
         <div className="grid lg:grid-cols-3 gap-4">
-          {[
-            { standard: "SOC 2 Type II", status: "Certified", expires: "Dec 2024" },
-            { standard: "ISO 27001", status: "Certified", expires: "Mar 2025" },
-            { standard: "GDPR Compliant", status: "Verified", expires: "Ongoing" },
-          ].map((cert, i) => (
-            <Card key={i} className="p-4 text-center">
+          {CERTS.map((cert) => (
+            <Card key={cert.standard} className="p-4 text-center">
               <CheckCircle className="h-6 w-6 text-green-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-foreground">{cert.standard}</p>
               <p className="text-xs text-muted-foreground">{cert.expires}</p>
@@ -26,24 +39,24 @@ export default function AdminCompliancePage() {
 
         <Card className="p-6">
           <h3 className="text-base font-bold text-foreground mb-4 flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-primary" /> Compliance Checklist
+            <ShieldCheck className="h-4 w-4 text-primary" /> Data-Subject Requests &amp; Legal Holds
           </h3>
-          <div className="space-y-2">
-            {[
-              { item: "Annual Penetration Testing", status: "Complete", date: "Jan 2024" },
-              { item: "Data Privacy Impact Assessment", status: "In Progress", date: "Due Feb 2024" },
-              { item: "Incident Response Drill", status: "Complete", date: "Dec 2023" },
-              { item: "Security Audit", status: "Scheduled", date: "Q2 2024" },
-            ].map((check, i) => (
-              <div key={i} className="flex items-center justify-between p-3 bg-muted/40 rounded">
-                <span className="text-sm text-foreground">{check.item}</span>
-                <div className="flex items-center gap-2">
-                  <Badge className={check.status === "Complete" ? "bg-green-100 text-green-700 border-0" : check.status === "In Progress" ? "bg-blue-100 text-blue-700 border-0" : "bg-purple-100 text-purple-700 border-0"}>{check.status}</Badge>
-                  <span className="text-xs text-muted-foreground">{check.date}</span>
-                </div>
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-muted-foreground text-sm"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
+          ) : error ? (
+            <div className="flex items-center gap-2 text-red-600 text-sm"><AlertTriangle className="h-4 w-4" /> Could not load compliance data.</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid sm:grid-cols-3 gap-3 text-center">
+                <div className="p-3 rounded bg-muted/40"><p className="text-xs text-muted-foreground">Open Requests</p><p className="text-xl font-bold">{c.openCount ?? (c.dataSubjectRequests?.length ?? 0)}</p></div>
+                <div className="p-3 rounded bg-muted/40"><p className="text-xs text-muted-foreground">Legal Holds</p><p className="text-xl font-bold">{c.legalHolds?.length ?? 0}</p></div>
+                <div className="p-3 rounded bg-muted/40"><p className="text-xs text-muted-foreground">Retention Policies</p><p className="text-xl font-bold">{c.retentionPolicies?.length ?? 0}</p></div>
               </div>
-            ))}
-          </div>
+              {(c.dataSubjectRequests?.length ?? 0) === 0 && (
+                <p className="text-sm text-muted-foreground flex items-center gap-2"><FileText className="h-4 w-4" /> No open data-subject requests or legal holds.</p>
+              )}
+            </div>
+          )}
         </Card>
       </div>
     </PageLayout>

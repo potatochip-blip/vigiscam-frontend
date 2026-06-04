@@ -2,34 +2,69 @@
 
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Radio, Eye } from "lucide-react"
+import { Radio, Loader2, AlertTriangle } from "lucide-react"
+import { useAdminLiveSessions } from "@/lib/hooks"
+
+type SessionRow = {
+  id: string
+  type?: string
+  status?: string
+  riskScore?: number
+  startedAt?: string
+  endedAt?: string | null
+  userId?: string
+  tenantId?: string
+}
 
 export default function AdminLiveSessionsPage() {
+  const { data, isLoading, error } = useAdminLiveSessions()
+  const sessions = (data ?? []) as SessionRow[]
+
   return (
     <PageLayout role="admin" title="Live Sessions" subtitle="Monitor active user sessions in real-time">
       <div className="space-y-6">
-        {[
-          { id: "SES-001", user: "Alice Chen", org: "Acme Corp", status: "Active", lastActivity: "Now", ip: "192.168.1.1" },
-          { id: "SES-002", user: "Bob Martinez", org: "Global Bank", status: "Active", lastActivity: "30s ago", ip: "203.0.113.45" },
-          { id: "SES-003", user: "Carol Williams", org: "Acme Corp", status: "Idle", lastActivity: "5 min ago", ip: "198.51.100.89" },
-        ].map((session) => (
-          <Card key={session.id} className="p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <Radio className="h-4 w-4 text-green-500 animate-pulse" />
-                  <h3 className="font-bold text-foreground">{session.user}</h3>
-                  <Badge className={session.status === "Active" ? "bg-green-100 text-green-700 border-0" : "bg-gray-100 text-gray-700 border-0"}>{session.status}</Badge>
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" /> Loading sessions…
+          </div>
+        ) : error ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-red-600">
+            <AlertTriangle className="h-5 w-5" /> Could not load sessions (reviewer access required).
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-16 text-muted-foreground">
+            <Radio className="h-8 w-8" />
+            <p className="font-medium">No sessions</p>
+          </div>
+        ) : (
+          sessions.map((session) => {
+            const active = session.status === "ACTIVE"
+            return (
+              <Card key={session.id} className="p-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <Radio className={`h-4 w-4 ${active ? "text-green-500 animate-pulse" : "text-muted-foreground"}`} />
+                      <h3 className="font-bold text-foreground">{session.type ?? "Session"}</h3>
+                      <Badge className={active ? "bg-green-100 text-green-700 border-0" : "bg-gray-100 text-gray-700 border-0"}>
+                        {session.status ?? "—"}
+                      </Badge>
+                      {typeof session.riskScore === "number" && session.riskScore > 0 && (
+                        <Badge className="bg-orange-100 text-orange-700 border-0">Risk {session.riskScore}</Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {session.userId ? `user ${session.userId.slice(0, 8)} · ` : ""}
+                      {session.startedAt ? `started ${new Date(session.startedAt).toLocaleString()}` : ""}
+                      {session.endedAt ? ` · ended ${new Date(session.endedAt).toLocaleTimeString()}` : ""}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground">{session.org} · {session.ip}</p>
-              </div>
-              <div className="text-xs text-muted-foreground mr-4">{session.lastActivity}</div>
-              <Button size="sm" variant="outline" className="gap-1"><Eye className="h-3 w-3" /></Button>
-            </div>
-          </Card>
-        ))}
+              </Card>
+            )
+          })
+        )}
       </div>
     </PageLayout>
   )
