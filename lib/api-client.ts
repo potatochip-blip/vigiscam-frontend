@@ -1141,6 +1141,93 @@ export const billingApi = {
 };
 
 // ============================================================================
+// ADMIN CONSOLE — internal-staff read surfaces (FE-6)
+// ============================================================================
+
+/** Normalise an openapi-fetch result into our ApiResponse envelope. */
+function adminResult<T>(
+  data: unknown,
+  error: unknown,
+  response: { status: number; statusText: string },
+): ApiResponse<T> {
+  if (error || data === undefined || data === null) {
+    return fail(`HTTP_${response.status}`, response.statusText);
+  }
+  return ok(data as unknown as T);
+}
+
+export interface AdminUserRow {
+  id: string; email: string; fullName: string; status: string;
+  role: string | null; tenantId: string | null; elderModeEnabled: boolean;
+  lastLoginAt: string | null; createdAt: string;
+}
+export interface AdminTenantRow {
+  id: string; name: string; type: string; status?: string; createdAt: string;
+  [k: string]: unknown;
+}
+export interface AdminRevenue {
+  mrr: number; arr: number; activeSubscriptions: number; totalSubscriptions: number;
+  planDistribution: { plan: string; label: string; subscriptions: number; monthlyRevenue: number }[];
+}
+
+type Dict = Record<string, unknown>;
+
+export const adminConsoleApi = {
+  async getUsers(): Promise<ApiResponse<AdminUserRow[]>> {
+    const r = await backend.GET('/api/v1/admin/users');
+    return adminResult<AdminUserRow[]>(r.data, r.error, r.response);
+  },
+  async getTenants(): Promise<ApiResponse<AdminTenantRow[]>> {
+    const r = await backend.GET('/api/v1/admin/oversight/tenants');
+    return adminResult<AdminTenantRow[]>(r.data, r.error, r.response);
+  },
+  async getStaff(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/staff');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getDevices(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/devices');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getLiveSessions(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/live-sessions');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getAuditLogs(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/audit-logs');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getRevenue(): Promise<ApiResponse<AdminRevenue>> {
+    const r = await backend.GET('/api/v1/admin/revenue');
+    return adminResult<AdminRevenue>(r.data, r.error, r.response);
+  },
+  async getScamCorpus(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/scam-corpus');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getScriptGenome(): Promise<ApiResponse<Dict[]>> {
+    const r = await backend.GET('/api/v1/admin/script-genome');
+    return adminResult<Dict[]>(r.data, r.error, r.response);
+  },
+  async getCompliance(): Promise<ApiResponse<Dict>> {
+    const r = await backend.GET('/api/v1/admin/compliance');
+    return adminResult<Dict>(r.data, r.error, r.response);
+  },
+  async getSupport(): Promise<ApiResponse<Dict>> {
+    const r = await backend.GET('/api/v1/admin/support');
+    return adminResult<Dict>(r.data, r.error, r.response);
+  },
+  async getSettings(): Promise<ApiResponse<Dict>> {
+    const r = await backend.GET('/api/v1/admin/settings');
+    return adminResult<Dict>(r.data, r.error, r.response);
+  },
+  async getOverview(): Promise<ApiResponse<Dict>> {
+    const r = await backend.GET('/api/v1/admin/oversight/overview');
+    return adminResult<Dict>(r.data, r.error, r.response);
+  },
+};
+
+// ============================================================================
 // EXPORT
 // ============================================================================
 
@@ -1154,6 +1241,7 @@ export const api = {
   admin: adminApi,
   settings: settingsApi,
   billing: billingApi,
+  adminConsole: adminConsoleApi,
 };
 
 export default api;

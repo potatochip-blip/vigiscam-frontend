@@ -435,6 +435,40 @@ export function useBillingActions() {
 }
 
 // ============================================================================
+// ADMIN CONSOLE HOOKS (FE-6) — internal-staff read surfaces
+// ============================================================================
+
+/** Generic SWR wrapper over an api.adminConsole.* call, auth-gated. */
+function useAdminResource<T>(key: string, fetcher: () => Promise<{ success: boolean; data?: T; error?: { message: string } }>) {
+  const { isAuthenticated } = useAuth()
+  return useSWR(
+    isAuthenticated ? key : null,
+    async () => {
+      const res = await fetcher()
+      if (!res.success || res.data === undefined) {
+        throw new Error(res.error?.message ?? `${key} failed`)
+      }
+      return res.data
+    },
+    SWR_CONFIG
+  )
+}
+
+export const useAdminUsers = () => useAdminResource("admin-users", () => api.adminConsole.getUsers())
+export const useAdminTenants = () => useAdminResource("admin-tenants", () => api.adminConsole.getTenants())
+export const useAdminStaff = () => useAdminResource("admin-staff", () => api.adminConsole.getStaff())
+export const useAdminDevices = () => useAdminResource("admin-devices", () => api.adminConsole.getDevices())
+export const useAdminLiveSessions = () => useAdminResource("admin-live-sessions", () => api.adminConsole.getLiveSessions())
+export const useAdminAuditLogs = () => useAdminResource("admin-audit-logs", () => api.adminConsole.getAuditLogs())
+export const useAdminRevenue = () => useAdminResource("admin-revenue", () => api.adminConsole.getRevenue())
+export const useAdminScamCorpus = () => useAdminResource("admin-scam-corpus", () => api.adminConsole.getScamCorpus())
+export const useAdminScriptGenome = () => useAdminResource("admin-script-genome", () => api.adminConsole.getScriptGenome())
+export const useAdminCompliance = () => useAdminResource("admin-compliance", () => api.adminConsole.getCompliance())
+export const useAdminSupport = () => useAdminResource("admin-support", () => api.adminConsole.getSupport())
+export const useAdminSettings = () => useAdminResource("admin-settings", () => api.adminConsole.getSettings())
+export const useAdminOverview = () => useAdminResource("admin-overview", () => api.adminConsole.getOverview())
+
+// ============================================================================
 // MUTATION HELPERS
 // ============================================================================
 
