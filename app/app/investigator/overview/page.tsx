@@ -1,125 +1,67 @@
 'use client'
 
+import useSWR from "swr"
+import Link from "next/link"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Search, Network, Users, FileText, AlertTriangle, TrendingUp, Clock, ArrowRight } from "lucide-react"
+import { Search, FolderOpen, Loader2, AlertTriangle } from "lucide-react"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 
-const activeCases = [
-  { id: "CASE-2847", name: "Operation Phantom Wire", type: "Romance Scam Ring", actors: 24, victims: 847, status: "Active", priority: "High" },
-  { id: "CASE-2846", name: "Tech Support Cluster Alpha", type: "Tech Support Fraud", actors: 12, victims: 234, status: "Active", priority: "Medium" },
-  { id: "CASE-2845", name: "Investment Fraud Cell 7", type: "Investment Scam", actors: 8, victims: 156, status: "Evidence Collection", priority: "High" },
-]
+type Investigation = { id: string; title?: string; status?: string; priority?: string; caseNumber?: string; createdAt?: string }
 
-const recentActivity = [
-  { action: "New actor linked", case: "CASE-2847", time: "2 min ago" },
-  { action: "Evidence package exported", case: "CASE-2845", time: "15 min ago" },
-  { action: "Timeline updated", case: "CASE-2846", time: "1 hour ago" },
-  { action: "Network graph expanded", case: "CASE-2847", time: "2 hours ago" },
-]
+async function fetchCases(): Promise<Investigation[]> {
+  const { data, error, response } = await backend.GET("/api/v1/investigator-portal/cases")
+  if (error || !response.ok) throw new Error(`Failed (${response.status})`)
+  return (data as unknown as Investigation[]) ?? []
+}
 
 export default function InvestigatorOverviewPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(isAuthenticated ? "investigator-cases" : null, fetchCases, { revalidateOnFocus: false })
+  const cases = data ?? []
+  const open = cases.filter((c) => c.status && !["CLOSED", "RESOLVED", "ARCHIVED"].includes(c.status)).length
+
   return (
     <PageLayout role="investigator" title="Investigator Console" subtitle="Advanced fraud investigation and evidence analysis tools">
-      {/* Stats */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-        {[
-          { label: "Active Cases", value: "23", change: "+3 this week", icon: FileText, color: "text-primary" },
-          { label: "Entities Tracked", value: "1,847", change: "Across all cases", icon: Users, color: "text-blue-500" },
-          { label: "Network Nodes", value: "4,234", change: "Connected actors", icon: Network, color: "text-purple-500" },
-          { label: "Evidence Items", value: "12.4K", change: "Preserved", icon: Search, color: "text-green-500" },
-        ].map((stat, i) => (
-          <Card key={i} className="p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-muted-foreground">{stat.label}</span>
-              <stat.icon className={`h-4 w-4 ${stat.color}`} />
+      <div className="max-w-7xl mx-auto space-y-6">
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading…</div>
+        ) : error ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-red-600"><AlertTriangle className="h-5 w-5" /> Could not load cases (investigator role required).</div>
+        ) : (
+          <>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <Card className="p-5"><FolderOpen className="h-5 w-5 text-primary mb-2" /><p className="text-xs text-muted-foreground mb-1">Total Cases</p><p className="text-xl font-bold">{cases.length}</p></Card>
+              <Card className="p-5"><Search className="h-5 w-5 text-amber-600 mb-2" /><p className="text-xs text-muted-foreground mb-1">Open Cases</p><p className="text-xl font-bold">{open}</p></Card>
+              <Card className="p-5"><FolderOpen className="h-5 w-5 text-green-600 mb-2" /><p className="text-xs text-muted-foreground mb-1">Closed</p><p className="text-xl font-bold">{cases.length - open}</p></Card>
             </div>
-            <p className="text-2xl font-bold text-foreground">{stat.value}</p>
-            <p className="text-xs text-muted-foreground">{stat.change}</p>
-          </Card>
-        ))}
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Active Cases */}
-        <div className="lg:col-span-2">
-          <Card className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-base font-bold text-foreground">Active Investigations</h2>
-              <Button size="sm" variant="outline">View All Cases</Button>
-            </div>
-
-            <div className="space-y-4">
-              {activeCases.map((caseItem) => (
-                <div key={caseItem.id} className="flex items-center justify-between p-4 bg-muted/40 rounded-lg">
-                  <div className="flex items-center gap-4">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${caseItem.priority === "High" ? "bg-red-100" : "bg-amber-100"}`}>
-                      <FileText className={`h-5 w-5 ${caseItem.priority === "High" ? "text-red-600" : "text-amber-600"}`} />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold text-foreground">{caseItem.name}</p>
-                        <Badge variant="outline" className="text-xs">{caseItem.id}</Badge>
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-foreground flex items-center gap-2"><FolderOpen className="h-5 w-5 text-primary" /> Recent Cases</h2>
+                <Button size="sm" asChild><Link href="/app/investigator/cases">View All</Link></Button>
+              </div>
+              {cases.length === 0 ? <p className="text-sm text-muted-foreground">No investigation cases yet.</p> : (
+                <div className="space-y-3">
+                  {cases.slice(0, 6).map((c) => (
+                    <div key={c.id} className="flex items-center justify-between p-3 rounded-md border bg-muted/30 gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{c.title ?? c.caseNumber ?? c.id.slice(0, 8)}</p>
+                        <p className="text-xs text-muted-foreground">{c.createdAt ? new Date(c.createdAt).toLocaleDateString() : ""}</p>
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span>{caseItem.type}</span>
-                        <span>{caseItem.actors} actors</span>
-                        <span>{caseItem.victims} victims</span>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {c.priority && <Badge variant="outline" className="text-xs">{c.priority}</Badge>}
+                        {c.status && <Badge className="bg-muted text-muted-foreground border-0 text-xs">{c.status}</Badge>}
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge className={caseItem.status === "Active" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}>
-                      {caseItem.status}
-                    </Badge>
-                    <Button size="sm" variant="ghost" className="gap-1">
-                      Open <ArrowRight className="h-4 w-4" />
-                    </Button>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </Card>
-        </div>
-
-        {/* Sidebar */}
-        <div className="space-y-6">
-          {/* Recent Activity */}
-          <Card className="p-6">
-            <h3 className="text-base font-bold text-foreground mb-4">Recent Activity</h3>
-            <div className="space-y-4">
-              {recentActivity.map((activity, i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <div className="w-2 h-2 rounded-full bg-primary mt-2" />
-                  <div>
-                    <p className="text-sm text-foreground">{activity.action}</p>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span>{activity.case}</span>
-                      <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {activity.time}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Quick Actions */}
-          <Card className="p-6">
-            <h3 className="text-base font-bold text-foreground mb-4">Quick Actions</h3>
-            <div className="space-y-2">
-              <Button variant="outline" className="w-full justify-start gap-2" size="sm">
-                <Search className="h-4 w-4" /> New Investigation
-              </Button>
-              <Button variant="outline" className="w-full justify-start gap-2" size="sm">
-                <Network className="h-4 w-4" /> Network Analysis
-              </Button>
-              <Button variant="outline" className="w-full justify-start gap-2" size="sm">
-                <FileText className="h-4 w-4" /> Generate Report
-              </Button>
-            </div>
-          </Card>
-        </div>
+              )}
+            </Card>
+          </>
+        )}
       </div>
     </PageLayout>
   )

@@ -1,67 +1,67 @@
 'use client'
 
+import useSWR from "swr"
+import Link from "next/link"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
-import { Stat } from "@/components/dashboard/stat"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts"
-import { Users, Shield, Lock, TrendingUp, AlertTriangle, CreditCard } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Building2, ScrollText, Loader2, AlertTriangle } from "lucide-react"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 
-const userData = [
-  { month: "Jan", active: 234, inactive: 12, suspended: 2 },
-  { month: "Feb", active: 245, inactive: 8, suspended: 3 },
-  { month: "Mar", active: 256, inactive: 5, suspended: 2 },
-]
+type Audit = { id: string; action?: string; actorType?: string | null; targetType?: string | null; createdAt?: string }
+type Policy = { key?: string; value?: unknown }
+
+async function fetchEnterprise() {
+  const [a, p] = await Promise.all([
+    backend.GET("/api/v1/enterprise-portal/audit-log"),
+    backend.GET("/api/v1/enterprise-portal/policies"),
+  ])
+  if (!a.response.ok && !p.response.ok) throw new Error("Failed")
+  return {
+    audit: ((a.data as unknown as Audit[]) ?? []),
+    policies: ((p.data as unknown as Policy[]) ?? []),
+  }
+}
 
 export default function EnterpriseOverviewPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(isAuthenticated ? "enterprise-overview" : null, fetchEnterprise, { revalidateOnFocus: false })
+
   return (
     <PageLayout role="enterprise" title="Enterprise Dashboard" subtitle="Organization-wide fraud protection and compliance">
-      <div className="space-y-6">
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Stat icon={Users} title="Active Users" value="892" description="Across 12 departments" />
-          <Stat icon={Shield} title="Policies Active" value="47" description="All compliant" />
-          <Stat icon={AlertTriangle} title="Incidents This Month" value="23" trend={{ value: 34, isPositive: true }} description="vs last month" />
-          <Stat icon={CreditCard} title="Monthly Cost" value="$12,450" description="Within budget" />
-        </div>
-
-        <div className="grid lg:grid-cols-2 gap-6">
-          <Card className="p-6">
-            <h3 className="text-base font-bold text-foreground mb-4">User Activity Trend</h3>
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={userData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="active" stroke="var(--color-primary)" />
-                <Line type="monotone" dataKey="inactive" stroke="var(--color-muted-foreground)" />
-              </LineChart>
-            </ResponsiveContainer>
-          </Card>
-
-          <Card className="p-6">
-            <h3 className="text-base font-bold text-foreground mb-4">Department Distribution</h3>
-            <div className="space-y-2">
-              {[
-                { dept: "Risk Management", users: 234, percent: 26 },
-                { dept: "Fraud Operations", users: 189, percent: 21 },
-                { dept: "Compliance", users: 167, percent: 19 },
-                { dept: "Security", users: 145, percent: 16 },
-                { dept: "Management", users: 157, percent: 18 },
-              ].map((d, i) => (
-                <div key={i} className="flex items-center justify-between">
-                  <span className="text-sm text-foreground">{d.dept}</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-24 h-2 bg-muted/40 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary" style={{ width: `${d.percent}%` }} />
-                    </div>
-                    <span className="text-xs text-muted-foreground w-8">{d.users}</span>
-                  </div>
-                </div>
-              ))}
+      <div className="max-w-7xl mx-auto space-y-6">
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading…</div>
+        ) : error ? (
+          <div className="flex items-center gap-2 py-16 justify-center text-red-600"><AlertTriangle className="h-5 w-5" /> Could not load enterprise data (enterprise role required).</div>
+        ) : (
+          <>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Card className="p-5"><ScrollText className="h-5 w-5 text-primary mb-2" /><p className="text-xs text-muted-foreground mb-1">Governance Policies</p><p className="text-xl font-bold">{data?.policies.length ?? 0}</p></Card>
+              <Card className="p-5"><Building2 className="h-5 w-5 text-blue-600 mb-2" /><p className="text-xs text-muted-foreground mb-1">Recent Activity</p><p className="text-xl font-bold">{data?.audit.length ?? 0}</p></Card>
             </div>
-          </Card>
-        </div>
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-foreground flex items-center gap-2"><ScrollText className="h-5 w-5 text-primary" /> Recent Activity</h2>
+                <Button size="sm" asChild><Link href="/app/enterprise/audit">View Audit Log</Link></Button>
+              </div>
+              {(data?.audit.length ?? 0) === 0 ? <p className="text-sm text-muted-foreground">No recent activity.</p> : (
+                <div className="space-y-2">
+                  {data?.audit.slice(0, 8).map((a) => (
+                    <div key={a.id} className="flex items-center justify-between p-3 rounded-md border bg-muted/20 gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{a.action ?? "Event"}</p>
+                        <p className="text-xs text-muted-foreground">{[a.actorType, a.targetType].filter(Boolean).join(" · ")}</p>
+                      </div>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">{a.createdAt ? new Date(a.createdAt).toLocaleDateString() : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </>
+        )}
       </div>
     </PageLayout>
   )
