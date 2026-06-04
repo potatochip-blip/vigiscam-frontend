@@ -12,9 +12,12 @@
  * 3. Add proper error boundaries in components
  */
 
+import { useCallback, useState } from "react"
 import useSWR, { mutate as globalMutate } from "swr"
 import useSWRMutation from "swr/mutation"
 import { api } from "./api-client"
+import type { PurchasablePlanCode } from "./api-client"
+import { useAuth } from "./auth-context"
 import type {
   RegistryEntry,
   ScamNetwork,
@@ -360,6 +363,75 @@ export function useUnreadAlertCount() {
     },
     { ...SWR_CONFIG, refreshInterval: 30000 }
   )
+}
+
+// ============================================================================
+// BILLING HOOKS
+// ============================================================================
+
+/** The authenticated tenant's current subscription (plan + status). */
+export function useSubscription() {
+  const { isAuthenticated } = useAuth()
+  return useSWR(
+    isAuthenticated ? "billing-subscription" : null,
+    async () => {
+      const res = await api.billing.getSubscription()
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "subscription failed")
+      }
+      return res.data
+    },
+    SWR_CONFIG
+  )
+}
+
+/**
+ * Billing actions — start a Stripe Checkout for a paid plan, or open the Billing
+ * Portal, redirecting the browser to the hosted Stripe page on success.
+ * `busy` is the plan code (or "portal") currently in flight; `error` is a
+ * human-readable failure message.
+ */
+export function useBillingActions() {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const upgrade = useCallback(async (plan: PurchasablePlanCode) => {
+    setBusy(plan)
+    setError(null)
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : ""
+      const res = await api.billing.startCheckout(plan, {
+        successUrl: `${origin}/dashboard/settings?billing=success`,
+        cancelUrl: `${origin}/pricing?billing=cancelled`,
+      })
+      if (res.success && res.data?.checkoutUrl) {
+        window.location.href = res.data.checkoutUrl
+        return
+      }
+      setError(res.error?.message ?? "Could not start checkout. Please try again.")
+    } catch {
+      setError("Could not start checkout. Please try again.")
+    }
+    setBusy(null)
+  }, [])
+
+  const manageBilling = useCallback(async () => {
+    setBusy("portal")
+    setError(null)
+    try {
+      const res = await api.billing.openPortal()
+      if (res.success && res.data?.url) {
+        window.location.href = res.data.url
+        return
+      }
+      setError(res.error?.message ?? "Could not open the billing portal.")
+    } catch {
+      setError("Could not open the billing portal.")
+    }
+    setBusy(null)
+  }, [])
+
+  return { upgrade, manageBilling, busy, error }
 }
 
 // ============================================================================

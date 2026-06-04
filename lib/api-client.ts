@@ -1081,6 +1081,66 @@ export const settingsApi = {
 };
 
 // ============================================================================
+// BILLING — Stripe checkout / portal / subscription (live)
+// ============================================================================
+
+export type BillingPlanCode = 'FREE' | 'BASIC' | 'FAMILY_GUARDIAN' | 'PREMIUM_SHIELD';
+export type PurchasablePlanCode = Exclude<BillingPlanCode, 'FREE'>;
+
+export interface BillingSubscription {
+  tenantId: string;
+  plan: BillingPlanCode;
+  status: string;
+  stripeCustomerId: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  manualInvoice: boolean;
+  stripeConfigured: boolean;
+}
+
+export const billingApi = {
+  // GET /billing/subscription — the tenant's current plan + status.
+  async getSubscription(): Promise<ApiResponse<BillingSubscription>> {
+    const { data, error, response } = await backend.GET('/api/v1/billing/subscription');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(data as unknown as BillingSubscription);
+  },
+
+  // POST /billing/checkout — start a Stripe Checkout session for a paid plan.
+  // Returns the hosted checkout URL the caller should redirect the browser to.
+  async startCheckout(
+    plan: PurchasablePlanCode,
+    opts: { successUrl?: string; cancelUrl?: string } = {},
+  ): Promise<ApiResponse<{ checkoutUrl: string | null; sessionId: string }>> {
+    const { data, error, response } = await backend.POST('/api/v1/billing/checkout', {
+      body: {
+        plan,
+        ...(opts.successUrl ? { successUrl: opts.successUrl } : {}),
+        ...(opts.cancelUrl ? { cancelUrl: opts.cancelUrl } : {}),
+      } as unknown as never,
+    });
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(data as unknown as { checkoutUrl: string | null; sessionId: string });
+  },
+
+  // POST /billing/portal — open the Stripe Billing Portal to manage card/cancel.
+  // The return URL is derived server-side from APP_PUBLIC_URL.
+  async openPortal(): Promise<ApiResponse<{ url: string }>> {
+    const { data, error, response } = await backend.POST('/api/v1/billing/portal', {
+      body: {} as unknown as never,
+    });
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(data as unknown as { url: string });
+  },
+};
+
+// ============================================================================
 // EXPORT
 // ============================================================================
 
@@ -1093,6 +1153,7 @@ export const api = {
   dashboard: dashboardApi,
   admin: adminApi,
   settings: settingsApi,
+  billing: billingApi,
 };
 
 export default api;

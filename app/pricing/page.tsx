@@ -3,12 +3,19 @@
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { CheckCircle2 } from "lucide-react"
+import { CheckCircle2, Loader2 } from "lucide-react"
+import { useAuth } from "@/lib/auth-context"
+import { useBillingActions } from "@/lib/hooks"
+import type { PurchasablePlanCode } from "@/lib/api-client"
 
 export default function PricingPage() {
+  const { isAuthenticated } = useAuth()
+  const { upgrade, busy, error } = useBillingActions()
+
   const plans = [
     {
       name: "Basic",
+      planCode: "BASIC" as PurchasablePlanCode,
       price: "$9.99",
       period: "/month",
       desc: "Core scam detection for individuals",
@@ -28,6 +35,7 @@ export default function PricingPage() {
     },
     {
       name: "Family Guardian",
+      planCode: "FAMILY_GUARDIAN" as PurchasablePlanCode,
       price: "$19.99",
       period: "/month",
       desc: "Full protection for up to 10 family members",
@@ -49,6 +57,7 @@ export default function PricingPage() {
     },
     {
       name: "Premium Shield",
+      planCode: "PREMIUM_SHIELD" as PurchasablePlanCode,
       price: "$39.99",
       period: "/month",
       desc: "Complete protection suite for serious risk",
@@ -107,6 +116,11 @@ export default function PricingPage() {
       {/* Pricing Cards */}
       <section className="py-20 bg-muted/40">
         <div className="container mx-auto px-4">
+          {error && (
+            <div className="max-w-6xl mx-auto mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
             {plans.map((plan: typeof plans[0] & { highlight?: boolean }) => (
               <div key={plan.name} className={`relative bg-card border rounded-lg p-6 flex flex-col h-full ${plan.highlight ? "border-primary shadow-md" : "border-border"}`}>
@@ -134,11 +148,33 @@ export default function PricingPage() {
                     </li>
                   ))}
                 </ul>
-                <Link href={plan.href}>
-                  <Button className={`w-full ${plan.highlight ? "bg-primary text-primary-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}>
-                    {plan.cta}
-                  </Button>
-                </Link>
+                {(() => {
+                  const planCode = (plan as { planCode?: PurchasablePlanCode }).planCode
+                  const btnClass = `w-full ${plan.highlight ? "bg-primary text-primary-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`
+                  // Logged-in users on a purchasable plan go straight to Stripe
+                  // Checkout; everyone else follows the original link (signup / sales).
+                  if (planCode && isAuthenticated) {
+                    const isBusy = busy === planCode
+                    return (
+                      <Button
+                        className={btnClass}
+                        disabled={!!busy}
+                        onClick={() => upgrade(planCode)}
+                      >
+                        {isBusy ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting…</>
+                        ) : (
+                          "Upgrade"
+                        )}
+                      </Button>
+                    )
+                  }
+                  return (
+                    <Link href={plan.href}>
+                      <Button className={btnClass}>{plan.cta}</Button>
+                    </Link>
+                  )
+                })()}
               </div>
             ))}
           </div>

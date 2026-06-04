@@ -24,8 +24,19 @@ import {
   Eye,
   Trash2,
   Download,
+  Loader2,
+  AlertTriangle,
+  ExternalLink,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useSubscription, useBillingActions } from "@/lib/hooks"
+
+const PLAN_LABELS: Record<string, string> = {
+  FREE: "Free",
+  BASIC: "Basic",
+  FAMILY_GUARDIAN: "Family Guardian",
+  PREMIUM_SHIELD: "Premium Shield",
+}
 
 export default function SettingsPage() {
   const [notifications, setNotifications] = useState({
@@ -35,6 +46,8 @@ export default function SettingsPage() {
     trustedAlerts: true,
     weeklyReport: false,
   })
+  const { data: subscription, isLoading: subLoading } = useSubscription()
+  const { manageBilling, busy: billingBusy, error: billingError } = useBillingActions()
 
   return (
     <div className="min-h-screen bg-muted/30">
@@ -364,81 +377,81 @@ export default function SettingsPage() {
 
           {/* Billing Tab */}
           <TabsContent value="billing" className="space-y-6">
+            {billingError && (
+              <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                {billingError}
+              </div>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle>Current Plan</CardTitle>
                 <CardDescription>Manage your subscription and billing</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center justify-between p-4 rounded-lg bg-primary/5 border border-primary/20">
-                  <div>
-                    <p className="font-semibold text-lg">Family Plan</p>
-                    <p className="text-sm text-muted-foreground">$29.99/month · Renews Dec 15, 2025</p>
+                {subLoading ? (
+                  <div className="flex items-center gap-2 p-4 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading your plan…
                   </div>
-                  <Button variant="outline">Change Plan</Button>
-                </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between p-4 rounded-lg bg-primary/5 border border-primary/20">
+                      <div>
+                        <p className="font-semibold text-lg">
+                          {PLAN_LABELS[subscription?.plan ?? "FREE"] ?? "Free"} Plan
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Status: <span className="capitalize">{(subscription?.status ?? "inactive").toLowerCase()}</span>
+                          {subscription?.currentPeriodEnd && (
+                            <> · {subscription.cancelAtPeriodEnd ? "Ends" : "Renews"} {new Date(subscription.currentPeriodEnd).toLocaleDateString()}</>
+                          )}
+                        </p>
+                      </div>
+                      <Button variant="outline" asChild>
+                        <Link href="/pricing">
+                          {subscription && subscription.plan !== "FREE" ? "Change Plan" : "Upgrade"}
+                        </Link>
+                      </Button>
+                    </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="p-4 rounded-lg border">
-                    <p className="text-sm text-muted-foreground">Protected Users</p>
-                    <p className="text-2xl font-bold">3 / 5</p>
-                  </div>
-                  <div className="p-4 rounded-lg border">
-                    <p className="text-sm text-muted-foreground">Next Billing Date</p>
-                    <p className="text-2xl font-bold">Dec 15</p>
-                  </div>
-                </div>
+                    {subscription?.cancelAtPeriodEnd && (
+                      <p className="text-sm text-amber-600">
+                        Your subscription is set to cancel at the end of the current period.
+                      </p>
+                    )}
+                  </>
+                )}
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Payment Method</CardTitle>
-                <CardDescription>Manage your payment details</CardDescription>
+                <CardTitle>Payment & Invoices</CardTitle>
+                <CardDescription>
+                  Update your card, download invoices, or cancel — securely through Stripe.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center justify-between p-4 rounded-lg border">
-                  <div className="flex items-center gap-3">
-                    <CreditCard className="h-5 w-5 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium">Visa ending in 4242</p>
-                      <p className="text-sm text-muted-foreground">Expires 12/2026</p>
-                    </div>
-                  </div>
-                  <Button variant="ghost" size="sm">
-                    Edit
+                {subscription && subscription.plan !== "FREE" ? (
+                  <Button
+                    variant="outline"
+                    disabled={billingBusy === "portal"}
+                    onClick={() => manageBilling()}
+                    className="gap-2"
+                  >
+                    {billingBusy === "portal" ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Opening…</>
+                    ) : (
+                      <><CreditCard className="h-4 w-4" /> Manage Billing <ExternalLink className="h-3.5 w-3.5" /></>
+                    )}
                   </Button>
-                </div>
-                <Button variant="outline">Add Payment Method</Button>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Billing History</CardTitle>
-                <CardDescription>View past invoices and receipts</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {[
-                    { date: "Nov 15, 2025", amount: "$29.99", status: "Paid" },
-                    { date: "Oct 15, 2025", amount: "$29.99", status: "Paid" },
-                    { date: "Sep 15, 2025", amount: "$29.99", status: "Paid" },
-                  ].map((invoice, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 rounded-lg border">
-                      <div>
-                        <p className="font-medium">{invoice.date}</p>
-                        <p className="text-sm text-muted-foreground">{invoice.amount}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-green-600">{invoice.status}</span>
-                        <Button variant="ghost" size="sm">
-                          <Download className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                ) : (
+                  <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <CreditCard className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    You&apos;re on the Free plan. Choose a paid plan to add a payment method and unlock premium protection.
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
