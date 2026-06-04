@@ -29,13 +29,9 @@ import type {
   FilterParams,
 } from "./types"
 
-// Import mock data for development
+// Import mock data for development (surfaces not yet backed by an endpoint)
 import {
-  mockRegistryEntries,
   mockNetworks,
-  mockVerificationQueue,
-  mockPublicDrafts,
-  mockCorrectionsAppeals,
   mockSubmissions,
 } from "./scam-intelligence-data"
 
@@ -121,12 +117,11 @@ export function useRegistryEntry(id: string | null) {
   return useSWR(
     id ? ["registry", id] : null,
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.scamIntelligence.getRegistryEntry(id)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      return mockRegistryEntries.find((entry) => entry.id === id) || null
+      const res = await api.scamIntelligence.getRegistryEntry(id as string)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "registry entry failed")
+      }
+      return res.data
     },
     SWR_CONFIG
   )
@@ -271,28 +266,11 @@ export function useVerificationQueue(params: PaginationParams & FilterParams = {
   return useSWR(
     ["verification-queue", params],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.admin.getVerificationQueue(params)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockVerificationQueue]
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
+      const res = await api.admin.getVerificationQueue(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "verification queue failed")
       }
+      return res.data
     },
     SWR_CONFIG
   )
@@ -305,32 +283,11 @@ export function usePublicRegistryDrafts(params: PaginationParams & FilterParams 
   return useSWR(
     ["public-registry-drafts", params],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.admin.getPublicRegistryDrafts(params)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockPublicDrafts]
-      
-      if (params.status?.length) {
-        data = data.filter((draft) => params.status?.includes(draft.visibilityState))
+      const res = await api.admin.getPublicRegistryDrafts(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "registry drafts failed")
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return res.data
     },
     SWR_CONFIG
   )
@@ -343,32 +300,11 @@ export function useAppeals(params: PaginationParams & FilterParams = {}) {
   return useSWR(
     ["appeals", params],
     async () => {
-      // TODO: Replace with real API call
-      // const response = await api.admin.getAppeals(params)
-      // return response.data
-      
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockCorrectionsAppeals]
-      
-      if (params.status?.length) {
-        data = data.filter((appeal) => params.status?.includes(appeal.status))
+      const res = await api.admin.getAppeals(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "appeals failed")
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return res.data
     },
     SWR_CONFIG
   )

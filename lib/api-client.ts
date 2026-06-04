@@ -33,6 +33,8 @@ import type {
   // Scam Intelligence
   IndicatorCheckRequest,
   IndicatorCheckResponse,
+  IndicatorType,
+  ScamFamily,
   RegistryEntry,
   ScamNetwork,
   // Reports
@@ -59,7 +61,13 @@ import type {
   OrganizationSettings,
 } from './types';
 import { backend, setAuthToken } from './backend';
-import { mapAlert, mapIndicatorType, mapRegistryEntry, toUpperSnake } from './mappers';
+import {
+  mapAlert,
+  mapIndicatorType,
+  mapRegistryEntry,
+  mapScamFamily,
+  toUpperSnake,
+} from './mappers';
 
 // ============================================================================
 // HELPERS
@@ -334,11 +342,43 @@ export const scamIntelligenceApi = {
     });
   },
 
-  async getRegistryEntry(_id: string): Promise<ApiResponse<RegistryEntry>> {
-    // Backend exposes single-entry lookup as an admin route; the public
-    // search returns everything the public UI needs. Resolve from the
-    // cached search list at the call site, or wire when /registry/:id lands.
-    return notImplemented<RegistryEntry>('getRegistryEntry');
+  // CP-13 — wired to the internal single-entry lookup.
+  async getRegistryEntry(id: string): Promise<ApiResponse<RegistryEntry>> {
+    const { data, error, response } = await backend.GET(
+      '/api/v1/intelligence/registry/{id}',
+      { params: { path: { id } } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const e = data as unknown as {
+      id: string;
+      indicatorType: string;
+      indicatorValue: string;
+      category: string;
+      publicStatus: string | null;
+      publicSafeSummary: string;
+      recommendedAction: string | null;
+      firstSeen: string | null;
+      lastSeen: string | null;
+      evidenceCount: number;
+      publishedAt: string | null;
+    };
+    return ok(
+      mapRegistryEntry({
+        id: e.id,
+        indicatorType: e.indicatorType,
+        indicator: e.indicatorValue,
+        category: e.category,
+        publicStatus: e.publicStatus,
+        summary: e.publicSafeSummary,
+        recommendedAction: e.recommendedAction,
+        firstSeen: e.firstSeen,
+        lastSeen: e.lastSeen,
+        evidenceCount: e.evidenceCount,
+        publishedAt: e.publishedAt,
+      }),
+    );
   },
 
   // Networks & takedowns are admin-scoped on the backend — not on the
@@ -580,27 +620,301 @@ export const dashboardApi = {
     notImplemented<{ date: string; count: number }[]>('getThreatsTrend'),
 };
 
+/** Raw RegistryReviewQueue row + denormalised signal summary. */
+type BackendReviewQueueRow = {
+  id: string;
+  signalId: string | null;
+  registryEntryId: string | null;
+  reviewStatus: string;
+  publicSafe: boolean;
+  assignedToUserId: string | null;
+  reviewNotes: string | null;
+  decision: string | null;
+  createdAt: string;
+  updatedAt: string;
+  signal: {
+    id: string;
+    indicatorType: string;
+    indicatorValue: string;
+    status: string;
+    confidenceScore: number | null;
+    reportCount: number;
+  } | null;
+};
+
+function mapReviewQueueItem(r: BackendReviewQueueRow): VerificationQueueItem {
+  const decisionMap: Record<string, ReviewDecision> = {
+    APPROVED: 'approve',
+    REJECTED: 'reject',
+    ESCALATED: 'escalate',
+  };
+  return {
+    // Key the item by its registry entry when present so makeDecision can act
+    // on the registry lifecycle; fall back to the queue-item id.
+    id: r.registryEntryId ?? r.id,
+    submissionId: r.signalId ?? r.id,
+    indicatorValue: r.signal?.indicatorValue ?? '—',
+    indicatorType: r.signal
+      ? mapIndicatorType(r.signal.indicatorType)
+      : ('other' as IndicatorType),
+    suspectedScamFamily: 'other' as ScamFamily,
+    reviewerConfidence: r.signal?.confidenceScore ?? 0,
+    repeatedReportCount: r.signal?.reportCount ?? 0,
+    a1ScamshieldScriptMatch: false,
+    linkedEntities: [],
+    publicSafeReviewed: r.publicSafe,
+    notes: r.reviewNotes ?? undefined,
+    decision: r.decision ? decisionMap[r.decision] : undefined,
+    assignedReviewer: r.assignedToUserId ?? undefined,
+    createdAt: r.createdAt,
+    reviewedAt: r.reviewStatus === 'PENDING' ? undefined : r.updatedAt,
+  };
+}
+
+/** Raw RegistryEntry row (internal view). */
+type BackendRegistryEntryRow = {
+  id: string;
+  indicatorType: string;
+  indicatorValue: string;
+  category: string;
+  status: string;
+  publicStatus: string | null;
+  publicSafeSummary: string;
+  publishedAt: string | null;
+  updatedAt: string;
+  approvedByUserId: string | null;
+};
+
+function mapRegistryDraft(e: BackendRegistryEntryRow): PublicRegistryDraft {
+  const visibilityState: PublicRegistryDraft['visibilityState'] =
+    e.publicStatus === 'PUBLISHED'
+      ? 'published'
+      : e.publicStatus === 'UNPUBLISHED'
+        ? 'unpublished'
+        : e.status === 'APPROVED_PUBLIC_SAFE'
+          ? 'approved-public-safe'
+          : 'private-only';
+  return {
+    id: e.id,
+    indicatorValue: e.indicatorValue,
+    indicatorType: mapIndicatorType(e.indicatorType),
+    scamFamily: mapScamFamily(e.category),
+    publicBadge: 'Verified Malicious',
+    visibilityState,
+    publicSafeSummary: e.publicSafeSummary,
+    redactedFields: [],
+    publishedBy: e.approvedByUserId ?? undefined,
+    publishedAt: e.publishedAt ?? undefined,
+    lastEditedAt: e.updatedAt,
+  };
+}
+
+/** Raw RegistryAppeal row. */
+type BackendAppealRow = {
+  id: string;
+  registryEntryId: string;
+  appealType: string;
+  status: string;
+  submitterName: string;
+  submitterEmail: string;
+  submitterRelationship: string | null;
+  reason: string;
+  resolutionAction: string | null;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+};
+
+function mapCorrectionAppeal(a: BackendAppealRow): CorrectionAppeal {
+  const statusMap: Record<string, CorrectionAppeal['status']> = {
+    SUBMITTED: 'pending',
+    UNDER_REVIEW: 'under-review',
+    ACCEPTED: 'changed',
+    REJECTED: 'upheld',
+    RESOLVED: 'changed',
+  };
+  const typeMap: Record<string, CorrectionAppeal['appealType']> = {
+    CORRECTION: 'correction',
+    REMOVAL: 'removal',
+    OWNERSHIP_DISPUTE: 'dispute',
+  };
+  return {
+    id: a.id,
+    registryId: a.registryEntryId,
+    indicatorValue: '—', // not denormalised on the appeal row
+    indicatorType: 'other' as IndicatorType,
+    appealType: typeMap[a.appealType] ?? 'correction',
+    status: statusMap[a.status] ?? 'pending',
+    submittedAt: a.createdAt,
+    submitterType:
+      a.submitterRelationship === 'legal' ? 'legal' : 'subject',
+    submitterEmail: a.submitterEmail,
+    summary: a.reason,
+    resolution: a.resolutionAction ?? undefined,
+    resolvedAt: a.reviewedAt ?? undefined,
+    resolvedBy: a.reviewedByUserId ?? undefined,
+  };
+}
+
 export const adminApi = {
-  getVerificationQueue: (_p?: PaginationParams & FilterParams) =>
-    notImplemented<PaginatedResponse<VerificationQueueItem>>(
-      'getVerificationQueue',
-    ),
-  makeDecision: (_id: string, _d: ReviewDecision, _n?: string) =>
-    notImplemented<VerificationQueueItem>('makeDecision'),
-  getPublicRegistryDrafts: (_p?: PaginationParams & FilterParams) =>
-    notImplemented<PaginatedResponse<PublicRegistryDraft>>(
-      'getPublicRegistryDrafts',
-    ),
+  // CP-13 — wired to the internal review queue.
+  async getVerificationQueue(
+    params: PaginationParams & FilterParams = {},
+  ): Promise<ApiResponse<PaginatedResponse<VerificationQueueItem>>> {
+    const { data, error, response } = await backend.GET(
+      '/api/v1/intelligence/review-queue',
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const items = (data as unknown as BackendReviewQueueRow[]).map(
+      mapReviewQueueItem,
+    );
+    return ok(paginate(items, params));
+  },
+
+  // CP-13 — approve/reject drive the registry lifecycle; the queue id we
+  // surface is the registry entry id (see mapReviewQueueItem). escalate /
+  // request-more-evidence have no backend transition yet.
+  async makeDecision(
+    id: string,
+    decision: ReviewDecision,
+    _notes?: string,
+  ): Promise<ApiResponse<VerificationQueueItem>> {
+    const path =
+      decision === 'approve'
+        ? ('/api/v1/intelligence/registry/{id}/approve' as const)
+        : decision === 'reject'
+          ? ('/api/v1/intelligence/registry/{id}/reject' as const)
+          : null;
+    if (!path) {
+      return fail(
+        'UNSUPPORTED_DECISION',
+        `"${decision}" is not a backend-supported registry transition`,
+      );
+    }
+    const { data, error, response } = await backend.POST(path, {
+      params: { path: { id } },
+    });
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const e = data as unknown as BackendRegistryEntryRow;
+    // Echo the resulting entry back in the queue-item shape.
+    return ok(
+      mapReviewQueueItem({
+        id: e.id,
+        signalId: null,
+        registryEntryId: e.id,
+        reviewStatus: e.status,
+        publicSafe: e.status === 'APPROVED_PUBLIC_SAFE',
+        assignedToUserId: e.approvedByUserId,
+        reviewNotes: null,
+        decision: decision === 'approve' ? 'APPROVED' : 'REJECTED',
+        createdAt: e.updatedAt,
+        updatedAt: e.updatedAt,
+        signal: {
+          id: e.id,
+          indicatorType: e.indicatorType,
+          indicatorValue: e.indicatorValue,
+          status: e.status,
+          confidenceScore: 0,
+          reportCount: 0,
+        },
+      }),
+    );
+  },
+
+  // CP-13 — wired to the internal registry list (entries on their way to /
+  // already on the public registry).
+  async getPublicRegistryDrafts(
+    params: PaginationParams & FilterParams = {},
+  ): Promise<ApiResponse<PaginatedResponse<PublicRegistryDraft>>> {
+    const { data, error, response } = await backend.GET(
+      '/api/v1/intelligence/registry',
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const items = (data as unknown as BackendRegistryEntryRow[]).map(
+      mapRegistryDraft,
+    );
+    return ok(paginate(items, params));
+  },
+
+  // No partial-edit endpoint on the backend — edits flow through the
+  // candidate/approve lifecycle, not a freeform draft update.
   updateDraft: (_id: string, _d: Partial<PublicRegistryDraft>) =>
     notImplemented<PublicRegistryDraft>('updateDraft'),
-  publishDraft: (_id: string) =>
-    notImplemented<PublicRegistryDraft>('publishDraft'),
-  unpublishDraft: (_id: string, _reason?: string) =>
-    notImplemented<PublicRegistryDraft>('unpublishDraft'),
-  getAppeals: (_p?: PaginationParams & FilterParams) =>
-    notImplemented<PaginatedResponse<CorrectionAppeal>>('getAppeals'),
-  resolveAppeal: (_id: string, _r: string, _n?: string) =>
-    notImplemented<CorrectionAppeal>('resolveAppeal'),
+
+  // CP-13 — publish / unpublish drive the public registry visibility.
+  async publishDraft(id: string): Promise<ApiResponse<PublicRegistryDraft>> {
+    const { data, error, response } = await backend.POST(
+      '/api/v1/intelligence/registry/{id}/publish',
+      { params: { path: { id } } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(mapRegistryDraft(data as unknown as BackendRegistryEntryRow));
+  },
+
+  async unpublishDraft(
+    id: string,
+    _reason?: string,
+  ): Promise<ApiResponse<PublicRegistryDraft>> {
+    const { data, error, response } = await backend.POST(
+      '/api/v1/intelligence/registry/{id}/unpublish',
+      { params: { path: { id } } },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(mapRegistryDraft(data as unknown as BackendRegistryEntryRow));
+  },
+
+  // CP-13 — wired to the registry appeals queue.
+  async getAppeals(
+    params: PaginationParams & FilterParams = {},
+  ): Promise<ApiResponse<PaginatedResponse<CorrectionAppeal>>> {
+    const { data, error, response } = await backend.GET(
+      '/api/v1/intelligence/registry-appeals',
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const items = (data as unknown as BackendAppealRow[]).map(
+      mapCorrectionAppeal,
+    );
+    return ok(paginate(items, params));
+  },
+
+  // CP-13 — record the accept/reject decision on an appeal.
+  async resolveAppeal(
+    id: string,
+    resolution: string,
+    notes?: string,
+  ): Promise<ApiResponse<CorrectionAppeal>> {
+    const accepted = /accept|uphold|change|remov/i.test(resolution);
+    const { data, error, response } = await backend.POST(
+      '/api/v1/intelligence/registry-appeals/{id}/decide',
+      {
+        params: { path: { id } },
+        body: {
+          decision: accepted ? 'ACCEPTED' : 'REJECTED',
+          reviewNotes:
+            notes && notes.length >= 10
+              ? notes
+              : `Resolution recorded via console: ${resolution}`,
+          resolutionAction: resolution,
+        } as unknown as never,
+      },
+    );
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    return ok(mapCorrectionAppeal(data as unknown as BackendAppealRow));
+  },
 };
 
 export const settingsApi = {
