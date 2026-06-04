@@ -1,85 +1,60 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
+import useSWR from "swr"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  Radio,
-  Search,
-  Filter,
-  Eye,
-  CheckCircle2,
-  Archive,
-  Star,
-  Plus,
-  AlertTriangle,
-} from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
-import { Toaster } from "@/components/ui/toaster"
-import {
-  mockScamSignals,
-  mockEvidenceEvents,
-  type ScamSignal,
-  signalStatusLabels,
-  signalSourceLabels,
-  intelligenceScamCategoryLabels,
-  type SignalStatus,
-  type IntelligenceScamCategory,
-} from "@/lib/scam-intelligence-data"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Radio, Search, Loader2, AlertTriangle } from "lucide-react"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 
-const statusColors: Record<string, string> = {
-  "unverified-report": "bg-gray-100 text-gray-700 border-gray-300",
-  "suspicious-signal": "bg-amber-100 text-amber-800 border-amber-300",
-  "pattern-match": "bg-blue-100 text-blue-800 border-blue-300",
-  "under-review": "bg-purple-100 text-purple-800 border-purple-300",
-  "high-risk-indicator": "bg-orange-100 text-orange-800 border-orange-300",
-  "verified-scam-intelligence": "bg-green-100 text-green-800 border-green-300",
-  "public-safe-alert": "bg-teal-100 text-teal-800 border-teal-300",
-  "archived": "bg-slate-100 text-slate-600 border-slate-300",
+type Signal = {
+  id: string
+  indicatorType?: string
+  indicatorValue?: string
+  status?: string
+  category?: string | null
+  geography?: string | null
+  confidenceScore?: number
+  reportCount?: number
+  sourceType?: string
+  createdAt?: string
 }
 
-export default function IntelligenceSignalsPage() {
-  const [signals, setSignals] = useState<ScamSignal[]>(mockScamSignals)
-  const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<SignalStatus | "all">("all")
-  const [categoryFilter, setCategoryFilter] = useState<IntelligenceScamCategory | "all">("all")
-  const [selectedSignal, setSelectedSignal] = useState<ScamSignal | null>(null)
-  const { toast } = useToast()
+async function fetchSignals(): Promise<Signal[]> {
+  const { data, error, response } = await backend.GET("/api/v1/intelligence/signals")
+  if (error || !response.ok) throw new Error(`Failed to load signals (${response.status})`)
+  return (data as unknown as Signal[]) ?? []
+}
 
-  const filtered = signals.filter((s) => {
-    const matchSearch =
-      !search ||
-      s.indicator.toLowerCase().includes(search.toLowerCase()) ||
-      s.geography.toLowerCase().includes(search.toLowerCase()) ||
-      (s.linkedCluster ?? "").toLowerCase().includes(search.toLowerCase())
-    const matchStatus = statusFilter === "all" || s.status === statusFilter
-    const matchCat = categoryFilter === "all" || s.category === categoryFilter
-    return matchSearch && matchStatus && matchCat
-  })
-
-  const updateStatus = (id: string, status: SignalStatus, label: string) => {
-    setSignals((prev) => prev.map((s) => s.id === id ? { ...s, status } : s))
-    toast({ title: label, description: `Signal ${id} has been updated.` })
-    setSelectedSignal(null)
+const STATUSES = ["UNVERIFIED_REPORT", "SUSPICIOUS_SIGNAL", "PATTERN_MATCH", "UNDER_REVIEW", "HIGH_RISK_INDICATOR", "VERIFIED_SCAM_INTELLIGENCE", "PUBLIC_SAFE_ALERT", "ARCHIVED", "REJECTED"]
+const statusColor = (s?: string) => {
+  switch (s) {
+    case "VERIFIED_SCAM_INTELLIGENCE": case "PUBLIC_SAFE_ALERT": return "bg-green-100 text-green-800 border-green-300"
+    case "HIGH_RISK_INDICATOR": case "PATTERN_MATCH": return "bg-orange-100 text-orange-800 border-orange-300"
+    case "SUSPICIOUS_SIGNAL": case "UNDER_REVIEW": return "bg-amber-100 text-amber-800 border-amber-300"
+    case "REJECTED": case "ARCHIVED": return "bg-slate-100 text-slate-600 border-slate-300"
+    default: return "bg-gray-100 text-gray-700 border-gray-300"
   }
+}
+const human = (s?: string) => (s ?? "").replace(/_/g, " ").toLowerCase()
+
+export default function IntelligenceSignalsPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(isAuthenticated ? "intel-signals" : null, fetchSignals, { revalidateOnFocus: false })
+  const [search, setSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState("all")
+
+  const signals = data ?? []
+  const filtered = useMemo(() => signals.filter((s) => {
+    const matchSearch = !search || (s.indicatorValue ?? "").toLowerCase().includes(search.toLowerCase()) || (s.category ?? "").toLowerCase().includes(search.toLowerCase())
+    const matchStatus = statusFilter === "all" || s.status === statusFilter
+    return matchSearch && matchStatus
+  }), [signals, search, statusFilter])
 
   return (
     <div className="flex h-screen bg-background">
@@ -88,208 +63,65 @@ export default function IntelligenceSignalsPage() {
         <Header />
         <main className="flex-1 overflow-auto">
           <div className="p-6 max-w-7xl mx-auto space-y-5">
-
-            {/* Header */}
             <div>
-              <h1 className="text-2xl font-bold flex items-center gap-2">
-                <Radio className="h-5 w-5 text-primary" />
-                Live Scam Signal Feed
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                All incoming scam signals — review, promote, archive, and route to registry.
-              </p>
+              <h1 className="text-2xl font-bold flex items-center gap-2"><Radio className="h-5 w-5 text-primary" /> Live Signal Feed</h1>
+              <p className="text-sm text-muted-foreground mt-1">All incoming scam signals — scored, deduplicated, and routed for review.</p>
             </div>
 
-            {/* Filters */}
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="relative flex-1">
+            <div className="flex flex-wrap gap-3 items-center">
+              <div className="relative flex-1 min-w-[220px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search indicator, geography, cluster..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-10"
-                />
+                <Input className="pl-9" placeholder="Search by indicator or category…" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
-              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-                <SelectTrigger className="w-52">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[220px]"><SelectValue placeholder="Status" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Statuses</SelectItem>
-                  {Object.entries(signalStatusLabels).map(([k, v]) => (
-                    <SelectItem key={k} value={k}>{v}</SelectItem>
-                  ))}
+                  <SelectItem value="all">All statuses</SelectItem>
+                  {STATUSES.map((s) => <SelectItem key={s} value={s}>{human(s)}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as any)}>
-                <SelectTrigger className="w-52">
-                  <SelectValue placeholder="Category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {Object.entries(intelligenceScamCategoryLabels).map(([k, v]) => (
-                    <SelectItem key={k} value={k}>{v}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button variant="outline" onClick={() => { setSearch(""); setStatusFilter("all"); setCategoryFilter("all") }} className="gap-2 bg-transparent">
-                <Filter className="h-4 w-4" />
-                Clear
-              </Button>
             </div>
 
-            <p className="text-xs text-muted-foreground">Showing {filtered.length} of {signals.length} signals</p>
-
-            {/* Signal Table */}
             <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-base">Signals ({isLoading ? "…" : filtered.length})</CardTitle></CardHeader>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="border-b bg-muted/30">
-                      <tr>
-                        {["ID", "Source", "Category", "Indicator", "Confidence", "Status", "Last Seen", "Geography", "Action"].map((h) => (
+                {isLoading ? (
+                  <div className="flex items-center gap-2 py-12 justify-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading signals…</div>
+                ) : error ? (
+                  <div className="flex items-center gap-2 py-12 justify-center text-red-600"><AlertTriangle className="h-5 w-5" /> Could not load signals (reviewer access required).</div>
+                ) : filtered.length === 0 ? (
+                  <p className="text-sm text-muted-foreground p-6">No signals match the current filters.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="border-b bg-muted/30"><tr>
+                        {["Indicator", "Type", "Category", "Status", "Reports", "Confidence", "Collected"].map((h) => (
                           <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">{h}</th>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.map((signal) => (
-                        <tr key={signal.id} className="border-b hover:bg-muted/20 transition-colors">
-                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{signal.id}</td>
-                          <td className="px-4 py-3 text-xs">{signalSourceLabels[signal.source]}</td>
-                          <td className="px-4 py-3 text-xs">{intelligenceScamCategoryLabels[signal.category]}</td>
-                          <td className="px-4 py-3">
-                            <span className="font-mono text-xs truncate max-w-[140px] block">{signal.indicator}</span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className={`text-sm font-bold ${signal.confidence >= 80 ? "text-red-600" : signal.confidence >= 60 ? "text-amber-600" : "text-muted-foreground"}`}>
-                              {signal.confidence}%
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <Badge variant="outline" className={`text-xs border ${statusColors[signal.status]}`}>
-                              {signalStatusLabels[signal.status]}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">
-                            {new Date(signal.lastSeen).toLocaleDateString()}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground max-w-[120px] truncate">{signal.geography}</td>
-                          <td className="px-4 py-3">
-                            <Button size="sm" variant="ghost" className="gap-1 text-xs" onClick={() => setSelectedSignal(signal)}>
-                              <Eye className="h-3.5 w-3.5" />
-                              View
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {filtered.length === 0 && (
-                    <div className="text-center py-10 text-muted-foreground text-sm">No signals match your filters.</div>
-                  )}
-                </div>
+                      </tr></thead>
+                      <tbody>
+                        {filtered.map((s) => (
+                          <tr key={s.id} className="border-b hover:bg-muted/20 transition-colors">
+                            <td className="px-4 py-3 font-mono text-xs font-medium max-w-[220px] truncate">{s.indicatorValue ?? s.id.slice(0, 8)}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{human(s.indicatorType)}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{s.category ?? "—"}</td>
+                            <td className="px-4 py-3"><Badge variant="outline" className={`text-xs border ${statusColor(s.status)}`}>{human(s.status)}</Badge></td>
+                            <td className="px-4 py-3 text-xs">{s.reportCount ?? 0}</td>
+                            <td className="px-4 py-3">
+                              <span className={`text-sm font-bold ${(s.confidenceScore ?? 0) >= 80 ? "text-red-600" : (s.confidenceScore ?? 0) >= 55 ? "text-amber-600" : "text-muted-foreground"}`}>{s.confidenceScore ?? 0}</span>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{s.createdAt ? new Date(s.createdAt).toLocaleDateString() : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </CardContent>
             </Card>
-
           </div>
         </main>
       </div>
-
-      {/* Signal Detail Modal */}
-      <Dialog open={!!selectedSignal} onOpenChange={() => setSelectedSignal(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Radio className="h-4 w-4 text-primary" />
-              Signal Detail
-            </DialogTitle>
-            <DialogDescription>
-              {selectedSignal?.id} — {selectedSignal && signalSourceLabels[selectedSignal.source]}
-            </DialogDescription>
-          </DialogHeader>
-          {selectedSignal && (
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Indicator</p>
-                <p className="font-mono text-sm font-medium break-all">{selectedSignal.indicator}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <p className="text-xs text-muted-foreground">Category</p>
-                  <p className="font-medium mt-0.5">{intelligenceScamCategoryLabels[selectedSignal.category]}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Source</p>
-                  <p className="font-medium mt-0.5">{signalSourceLabels[selectedSignal.source]}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Confidence</p>
-                  <p className="font-bold mt-0.5 text-lg">{selectedSignal.confidence}%</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Risk Score</p>
-                  <p className={`font-bold mt-0.5 text-lg ${selectedSignal.riskScore >= 80 ? "text-red-600" : "text-amber-600"}`}>{selectedSignal.riskScore}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Geography</p>
-                  <p className="font-medium mt-0.5">{selectedSignal.geography}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Public Safe</p>
-                  <p className="font-medium mt-0.5">{selectedSignal.publicSafe ? "Yes" : "Pending review"}</p>
-                </div>
-              </div>
-              {selectedSignal.linkedCluster && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">Linked Cluster</p>
-                  <Badge variant="outline">{selectedSignal.linkedCluster}</Badge>
-                </div>
-              )}
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Evidence Summary</p>
-                <p className="text-sm text-foreground bg-muted/40 rounded p-2">{selectedSignal.evidenceSummary}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Status</p>
-                <Badge variant="outline" className={`border ${statusColors[selectedSignal.status]}`}>
-                  {signalStatusLabels[selectedSignal.status]}
-                </Badge>
-              </div>
-
-              {/* Actions */}
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t">
-                <Button size="sm" variant="outline" className="gap-1.5 bg-transparent" onClick={() => updateStatus(selectedSignal.id, "under-review", "Marked for review")}>
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  Mark for Review
-                </Button>
-                <Button size="sm" className="gap-1.5" onClick={() => updateStatus(selectedSignal.id, "verified-scam-intelligence", "Promoted to verified")}>
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Promote to Verified
-                </Button>
-                <Button size="sm" variant="outline" className="gap-1.5 bg-transparent" onClick={() => updateStatus(selectedSignal.id, "high-risk-indicator", "Added to watchlist")}>
-                  <Star className="h-3.5 w-3.5" />
-                  Add to Watchlist
-                </Button>
-                <Button size="sm" variant="outline" className="gap-1.5 bg-transparent" onClick={() => updateStatus(selectedSignal.id, "archived", "Signal archived")}>
-                  <Archive className="h-3.5 w-3.5" />
-                  Archive
-                </Button>
-                <Button size="sm" variant="outline" className="gap-1.5 col-span-2 bg-transparent" onClick={() => {
-                  toast({ title: "Registry entry created", description: `Candidate created for ${selectedSignal.id}` })
-                  setSelectedSignal(null)
-                }}>
-                  <Plus className="h-3.5 w-3.5" />
-                  Create Registry Entry
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Toaster />
     </div>
   )
 }

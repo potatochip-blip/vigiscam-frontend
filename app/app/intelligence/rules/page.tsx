@@ -1,38 +1,49 @@
 "use client"
 
+import useSWR from "swr"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Zap, CheckCircle2, Clock, Archive } from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
-import { Toaster } from "@/components/ui/toaster"
-import {
-  mockDetectionRules,
-  intelligenceScamCategoryLabels,
-} from "@/lib/scam-intelligence-data"
+import { Zap, Clock, Loader2, AlertTriangle } from "lucide-react"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 
-const triggerTypeLabels: Record<string, string> = {
-  "phrase-match": "Phrase Match",
-  "url-pattern": "URL Pattern",
-  behavioral: "Behavioral",
-  "network-graph": "Network Graph",
-  acoustic: "Acoustic",
+type Rule = {
+  id: string
+  name?: string
+  ruleType?: string
+  category?: string | null
+  severity?: string
+  status?: string
+  version?: number
+  updatedAt?: string
+}
+
+async function fetchRules(): Promise<Rule[]> {
+  const { data, error, response } = await backend.GET("/api/v1/intelligence/rules")
+  if (error || !response.ok) throw new Error(`Failed to load rules (${response.status})`)
+  return (data as unknown as Rule[]) ?? []
 }
 
 const statusColors: Record<string, string> = {
-  active: "bg-green-100 text-green-800 border-green-300",
-  testing: "bg-amber-100 text-amber-800 border-amber-300",
-  deprecated: "bg-slate-100 text-slate-600 border-slate-300",
+  ACTIVE: "bg-green-100 text-green-800 border-green-300",
+  TESTING: "bg-amber-100 text-amber-800 border-amber-300",
+  DRAFT: "bg-blue-100 text-blue-800 border-blue-300",
+  DISABLED: "bg-slate-100 text-slate-600 border-slate-300",
+  RETIRED: "bg-slate-100 text-slate-600 border-slate-300",
 }
+const sevWeight: Record<string, number> = { LOW: 30, MEDIUM: 55, HIGH: 78, CRITICAL: 95 }
 
 export default function DetectionRulesPage() {
-  const { toast } = useToast()
-
-  const handleAction = (ruleId: string, action: string) => {
-    toast({ title: action, description: `Rule ${ruleId} updated.` })
-  }
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(
+    isAuthenticated ? "intel-rules" : null,
+    fetchRules,
+    { revalidateOnFocus: false },
+  )
+  const rules = data ?? []
+  const count = (s: string) => rules.filter((r) => r.status === s).length
 
   return (
     <div className="flex h-screen bg-background">
@@ -41,111 +52,72 @@ export default function DetectionRulesPage() {
         <Header />
         <main className="flex-1 overflow-auto">
           <div className="p-6 max-w-7xl mx-auto space-y-5">
-
-            {/* Header */}
             <div>
               <h1 className="text-2xl font-bold flex items-center gap-2">
-                <Zap className="h-5 w-5 text-primary" />
-                Detection Rule Updates
+                <Zap className="h-5 w-5 text-primary" /> Detection Rule Updates
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
                 Rules generated and updated from verified scam intelligence clusters and signals.
               </p>
             </div>
 
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Active Rules", value: mockDetectionRules.filter((r) => r.status === "active").length, color: "text-green-600" },
-                { label: "In Testing", value: mockDetectionRules.filter((r) => r.status === "testing").length, color: "text-amber-600" },
-                { label: "Deprecated", value: mockDetectionRules.filter((r) => r.status === "deprecated").length, color: "text-muted-foreground" },
-              ].map((stat) => (
-                <Card key={stat.label}>
-                  <CardContent className="pt-4">
-                    <div className={`text-3xl font-bold ${stat.color}`}>{stat.value}</div>
-                    <p className="text-xs text-muted-foreground mt-1">{stat.label}</p>
+            {isLoading ? (
+              <div className="flex items-center gap-2 py-16 justify-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading rules…</div>
+            ) : error ? (
+              <div className="flex items-center gap-2 py-16 justify-center text-red-600"><AlertTriangle className="h-5 w-5" /> Could not load rules (reviewer access required).</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <Card><CardContent className="pt-4"><div className="text-3xl font-bold text-green-600">{count("ACTIVE")}</div><p className="text-xs text-muted-foreground mt-1">Active</p></CardContent></Card>
+                  <Card><CardContent className="pt-4"><div className="text-3xl font-bold text-amber-600">{count("TESTING") + count("DRAFT")}</div><p className="text-xs text-muted-foreground mt-1">Draft / Testing</p></CardContent></Card>
+                  <Card><CardContent className="pt-4"><div className="text-3xl font-bold text-muted-foreground">{count("DISABLED") + count("RETIRED")}</div><p className="text-xs text-muted-foreground mt-1">Disabled / Retired</p></CardContent></Card>
+                </div>
+
+                <Card>
+                  <CardHeader className="pb-3"><CardTitle className="text-base">All Detection Rules ({rules.length})</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    {rules.length === 0 ? (
+                      <p className="text-sm text-muted-foreground p-6">No detection rules yet.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead className="border-b bg-muted/30">
+                            <tr>{["Rule Name", "Category", "Type", "Status", "Updated", "Severity"].map((h) => (
+                              <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">{h}</th>
+                            ))}</tr>
+                          </thead>
+                          <tbody>
+                            {rules.map((rule) => {
+                              const w = sevWeight[rule.severity ?? "MEDIUM"] ?? 50
+                              return (
+                                <tr key={rule.id} className="border-b hover:bg-muted/20 transition-colors">
+                                  <td className="px-4 py-3 text-sm font-medium max-w-[240px]">{rule.name ?? "Rule"}</td>
+                                  <td className="px-4 py-3 text-xs text-muted-foreground">{rule.category ?? "—"}</td>
+                                  <td className="px-4 py-3"><Badge variant="secondary" className="text-xs">{(rule.ruleType ?? "").replace(/_/g, " ").toLowerCase()}</Badge></td>
+                                  <td className="px-4 py-3"><Badge variant="outline" className={`text-xs border ${statusColors[rule.status ?? "DRAFT"] ?? ""}`}>{rule.status ?? "DRAFT"}</Badge></td>
+                                  <td className="px-4 py-3 text-xs text-muted-foreground"><div className="flex items-center gap-1"><Clock className="h-3 w-3" />{rule.updatedAt ? new Date(rule.updatedAt).toLocaleDateString() : "—"}</div></td>
+                                  <td className="px-4 py-3">
+                                    <div className="flex items-center gap-1">
+                                      <div className="h-1.5 w-14 rounded-full bg-muted overflow-hidden">
+                                        <div className={`h-1.5 rounded-full ${w >= 85 ? "bg-red-500" : w >= 70 ? "bg-amber-500" : "bg-blue-500"}`} style={{ width: `${w}%` }} />
+                                      </div>
+                                      <span className="text-xs font-medium">{rule.severity ?? "—"}</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
-              ))}
-            </div>
-
-            {/* Rules Table */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">All Detection Rules ({mockDetectionRules.length})</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="border-b bg-muted/30">
-                      <tr>
-                        {["Rule ID", "Rule Name", "Category", "Trigger Type", "Updated From", "Status", "Last Updated", "Risk Weight", "Actions"].map((h) => (
-                          <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {mockDetectionRules.map((rule) => (
-                        <tr key={rule.id} className="border-b hover:bg-muted/20 transition-colors">
-                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{rule.id}</td>
-                          <td className="px-4 py-3 text-sm font-medium max-w-[200px]">{rule.name}</td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{intelligenceScamCategoryLabels[rule.category]}</td>
-                          <td className="px-4 py-3">
-                            <Badge variant="secondary" className="text-xs">{triggerTypeLabels[rule.triggerType]}</Badge>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{rule.updatedFrom}</td>
-                          <td className="px-4 py-3">
-                            <Badge variant="outline" className={`text-xs border ${statusColors[rule.status]}`}>
-                              {rule.status.charAt(0).toUpperCase() + rule.status.slice(1)}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">
-                            <div className="flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              {new Date(rule.lastUpdated).toLocaleDateString()}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1">
-                              <div className="h-1.5 w-14 rounded-full bg-muted overflow-hidden">
-                                <div
-                                  className={`h-1.5 rounded-full ${rule.riskWeight >= 85 ? "bg-red-500" : rule.riskWeight >= 70 ? "bg-amber-500" : "bg-blue-500"}`}
-                                  style={{ width: `${rule.riskWeight}%` }}
-                                />
-                              </div>
-                              <span className="text-xs font-medium">{rule.riskWeight}</span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex gap-1">
-                              {rule.status === "testing" && (
-                                <Button size="sm" className="gap-1 text-xs h-7 px-2"
-                                  onClick={() => handleAction(rule.id, "Rule activated")}>
-                                  <CheckCircle2 className="h-3 w-3" />
-                                  Activate
-                                </Button>
-                              )}
-                              {rule.status === "active" && (
-                                <Button size="sm" variant="outline" className="gap-1 text-xs h-7 px-2 bg-transparent"
-                                  onClick={() => handleAction(rule.id, "Rule deprecated")}>
-                                  <Archive className="h-3 w-3" />
-                                  Deprecate
-                                </Button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-
+              </>
+            )}
           </div>
         </main>
       </div>
-      <Toaster />
     </div>
   )
 }
