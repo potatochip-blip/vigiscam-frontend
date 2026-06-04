@@ -32,7 +32,6 @@ import type {
 // Import mock data for development (surfaces not yet backed by an endpoint)
 import {
   mockNetworks,
-  mockSubmissions,
 } from "./scam-intelligence-data"
 
 // ============================================================================
@@ -317,30 +316,11 @@ export function useSubmissions(params: PaginationParams & FilterParams = {}) {
   return useSWR(
     ["submissions", params],
     async () => {
-      // TODO: Replace with real API call
-      
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      let data = [...mockSubmissions]
-      
-      if (params.status?.length) {
-        data = data.filter((sub) => params.status?.includes(sub.status))
+      const res = await api.scamIntelligence.getSubmissions(params)
+      if (!res.success || !res.data) {
+        throw new Error(res.error?.message ?? "submissions failed")
       }
-      
-      const page = params.page || 1
-      const limit = params.limit || 10
-      const start = (page - 1) * limit
-      
-      return {
-        data: data.slice(start, start + limit),
-        pagination: {
-          page,
-          limit,
-          total: data.length,
-          totalPages: Math.ceil(data.length / limit),
-          hasNext: start + limit < data.length,
-          hasPrev: page > 1,
-        },
-      }
+      return res.data
     },
     SWR_CONFIG
   )

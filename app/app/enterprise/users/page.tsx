@@ -4,7 +4,7 @@ import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Role, Edit, Trash2, Plus } from "lucide-react"
+import { Users, Edit, Trash2, Plus } from "lucide-react"
 
 export default function EnterpriseUsersPage() {
   return (

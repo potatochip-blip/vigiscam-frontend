@@ -34,15 +34,14 @@ import {
   ArrowRight,
   Lock,
   ShieldCheck,
+  Loader2,
 } from "lucide-react"
 import {
-  mockSubmissions,
-  submissionStatusLabels,
   indicatorTypeLabels,
   scamFamilyLabels,
-  type SubmissionStatus,
-  type Submission,
 } from "@/lib/scam-intelligence-data"
+import { useSubmissions } from "@/lib/hooks"
+import type { Submission, SubmissionStatus } from "@/lib/types"
 
 const statusConfig: Record<SubmissionStatus, { label: string; color: string; icon: React.ComponentType<{ className?: string }> }> = {
   "new": { label: "New", color: "bg-blue-100 text-blue-800", icon: Inbox },
@@ -82,8 +81,11 @@ export default function IntelligenceSubmissionsPage() {
   const [filterStatus, setFilterStatus] = useState<SubmissionStatus | "all">("all")
   const [filterType, setFilterType] = useState("all")
 
+  const { data, isLoading, error } = useSubmissions({ limit: 200 })
+  const submissions: Submission[] = useMemo(() => data?.data ?? [], [data])
+
   const filtered = useMemo(() => {
-    return mockSubmissions.filter((s) => {
+    return submissions.filter((s) => {
       const matchSearch =
         !search ||
         s.indicatorValue.toLowerCase().includes(search.toLowerCase()) ||
@@ -93,9 +95,9 @@ export default function IntelligenceSubmissionsPage() {
       const matchType = filterType === "all" || s.indicatorType === filterType
       return matchSearch && matchStatus && matchType
     })
-  }, [search, filterStatus, filterType])
+  }, [submissions, search, filterStatus, filterType])
 
-  const counts = statusCounts(mockSubmissions)
+  const counts = statusCounts(submissions)
 
   return (
     <>
@@ -197,7 +199,23 @@ export default function IntelligenceSubmissionsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filtered.length === 0 && (
+                    {isLoading && (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Loading submissions…
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {!isLoading && error && (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-12 text-red-600">
+                          Could not load submissions. You may need to sign in with a reviewer account.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {!isLoading && !error && filtered.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
                           No submissions match the current filters.
@@ -212,9 +230,9 @@ export default function IntelligenceSubmissionsPage() {
                           <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{sub.description}</p>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="text-xs">{indicatorTypeLabels[sub.indicatorType]}</Badge>
+                          <Badge variant="outline" className="text-xs">{indicatorTypeLabels[sub.indicatorType as keyof typeof indicatorTypeLabels] ?? sub.indicatorType}</Badge>
                         </TableCell>
-                        <TableCell className="text-sm">{scamFamilyLabels[sub.suspectedScamFamily]}</TableCell>
+                        <TableCell className="text-sm">{scamFamilyLabels[sub.suspectedScamFamily as keyof typeof scamFamilyLabels] ?? sub.suspectedScamFamily}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{new Date(sub.submittedAt).toLocaleDateString()}</TableCell>
                         <TableCell>
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${submitterTypeColors[sub.submitterType]}`}>

@@ -405,6 +405,66 @@ export interface CaseNote {
 export type ReviewDecision = "approve" | "reject" | "request-more-evidence" | "escalate"
 
 // ============================================================================
+// INTELLIGENCE SUBMISSIONS (internal — raw scam signals)
+// ============================================================================
+
+export type SubmissionStatus =
+  | "new"
+  | "under-review"
+  | "needs-more-evidence"
+  | "rejected"
+  | "approved-for-verification"
+
+/** A raw scam-signal submission as the admin triage table renders it. */
+export interface Submission {
+  id: string
+  submittedAt: string
+  indicatorValue: string
+  indicatorType: IndicatorType
+  suspectedScamFamily: ScamFamily
+  status: SubmissionStatus
+  submitterType: "client" | "partner" | "anonymous"
+  description: string
+  evidenceCount: number
+  linkedVerificationId?: string
+}
+
+// ============================================================================
+// TAKEDOWN TRACKER (internal)
+// ============================================================================
+
+export type TakedownCurrentStatus =
+  | "under-review"
+  | "action-filed"
+  | "confirmed"
+  | "partial"
+  | "stalled"
+
+export interface TakedownStatusEvent {
+  date: string
+  status: TakedownCurrentStatus
+  note: string
+}
+
+/** A takedown request as the admin tracker renders it (backend TakedownRequest). */
+export interface TakedownRecord {
+  id: string
+  registryEntryId: string
+  providerType: string
+  providerName: string
+  providerReference: string | null
+  currentStatus: TakedownCurrentStatus
+  details: string
+  outcomeNotes: string | null
+  submittedAt: string | null
+  resolvedAt: string | null
+  createdAt: string
+  updatedAt: string
+  publicDisplayEligible: boolean
+  statusHistory: TakedownStatusEvent[]
+}
+
+// ============================================================================
 // IDENTITY COLLISION GRAPH (consumer)
 // ============================================================================
 
@@ -506,8 +566,13 @@ export interface CorrectionAppeal {
   status: AppealStatus
   submittedAt: string
   submitterType: "subject" | "legal" | "platform"
+  submitterName?: string
   submitterEmail?: string
   summary: string
+  /** The change the submitter is requesting (backend RegistryAppeal.requestedChange). */
+  requestedChange?: string
+  /** Internal reviewer notes recorded with the decision (never public). */
+  reviewNotes?: string
   evidenceProvided?: string[]
   resolution?: string
   resolvedAt?: string

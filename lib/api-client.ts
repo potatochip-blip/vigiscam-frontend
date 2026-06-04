@@ -36,6 +36,10 @@ import type {
   IndicatorType,
   ScamFamily,
   IdentityCollisionResult,
+  Submission,
+  SubmissionStatus,
+  TakedownRecord,
+  TakedownCurrentStatus,
   RegistryEntry,
   ScamNetwork,
   // Reports
@@ -273,6 +277,148 @@ export const authApi = {
 // SCAM INTELLIGENCE — wired to /api/v1/registry/*, /scam-check, /public-alerts
 // ============================================================================
 
+/** Raw backend ScamSignal row (reviewer list view). */
+type BackendSignalRow = {
+  id: string;
+  sourceType: string;
+  category: string | null;
+  indicatorType: string;
+  indicatorValue: string;
+  description: string | null;
+  rawText: string | null;
+  reportCount: number;
+  status: string;
+  createdAt: string;
+};
+
+/** Map the backend ScamSignalStatus onto the triage table's five buckets. */
+function mapSubmissionStatus(status: string): SubmissionStatus {
+  switch (status) {
+    case 'UNVERIFIED_REPORT':
+      return 'new';
+    case 'SUSPICIOUS_SIGNAL':
+    case 'PATTERN_MATCH':
+    case 'UNDER_REVIEW':
+    case 'HIGH_RISK_INDICATOR':
+      return 'under-review';
+    case 'VERIFIED_SCAM_INTELLIGENCE':
+    case 'PUBLIC_SAFE_ALERT':
+      return 'approved-for-verification';
+    case 'REJECTED':
+    case 'ARCHIVED':
+      return 'rejected';
+    default:
+      return 'new';
+  }
+}
+
+/** Map a signal's source to the table's submitter taxonomy. */
+function mapSubmitterType(sourceType: string): Submission['submitterType'] {
+  switch (sourceType) {
+    case 'INTERNAL':
+      return 'client';
+    case 'PARTNER_REPORT':
+    case 'BANK_REPORT':
+    case 'INVESTIGATOR':
+    case 'GOVERNMENT_ADVISORY':
+      return 'partner';
+    default:
+      return 'anonymous';
+  }
+}
+
+function mapSubmission(s: BackendSignalRow): Submission {
+  return {
+    id: s.id,
+    submittedAt: s.createdAt,
+    indicatorValue: s.indicatorValue,
+    indicatorType: mapIndicatorType(s.indicatorType),
+    suspectedScamFamily: mapScamFamily(s.category ?? ''),
+    status: mapSubmissionStatus(s.status),
+    submitterType: mapSubmitterType(s.sourceType),
+    description: s.description ?? s.rawText ?? '',
+    // The signal carries a corroborating-report count rather than a discrete
+    // evidence-attachment count; surface it as the table's "Evidence" figure.
+    evidenceCount: s.reportCount,
+  };
+}
+
+/** Raw backend TakedownRequest row (list view — no registryEntry include). */
+type BackendTakedownRow = {
+  id: string;
+  registryEntryId: string;
+  providerType: string;
+  providerName: string;
+  providerReference: string | null;
+  status: string;
+  details: string;
+  outcomeNotes: string | null;
+  submittedAt: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Map the backend TakedownStatus enum onto the tracker's five UI buckets. */
+function mapTakedownStatus(status: string): TakedownCurrentStatus {
+  switch (status) {
+    case 'DRAFT':
+    case 'SUBMITTED':
+      return 'under-review';
+    case 'ACKNOWLEDGED':
+    case 'IN_PROGRESS':
+      return 'action-filed';
+    case 'COMPLETED':
+      return 'confirmed';
+    case 'WITHDRAWN':
+      return 'partial';
+    case 'REJECTED':
+      return 'stalled';
+    default:
+      return 'under-review';
+  }
+}
+
+function mapTakedownRecord(r: BackendTakedownRow): TakedownRecord {
+  const currentStatus = mapTakedownStatus(r.status);
+  // Derive an audit timeline from the timestamps the backend records.
+  const statusHistory: TakedownRecord['statusHistory'] = [
+    { date: r.createdAt, status: 'under-review' as const, note: 'Takedown request created.' },
+  ];
+  if (r.submittedAt) {
+    statusHistory.push({
+      date: r.submittedAt,
+      status: 'action-filed',
+      note: `Submitted to ${r.providerName} (${r.providerType.replace(/_/g, ' ').toLowerCase()}).`,
+    });
+  }
+  if (r.resolvedAt) {
+    statusHistory.push({
+      date: r.resolvedAt,
+      status: currentStatus,
+      note: r.outcomeNotes ?? `Resolved as ${r.status.toLowerCase()}.`,
+    });
+  }
+  return {
+    id: r.id,
+    registryEntryId: r.registryEntryId,
+    providerType: r.providerType,
+    providerName: r.providerName,
+    providerReference: r.providerReference,
+    currentStatus,
+    details: r.details,
+    outcomeNotes: r.outcomeNotes,
+    submittedAt: r.submittedAt,
+    resolvedAt: r.resolvedAt,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    // A confirmed (COMPLETED) takedown is the only state eligible for the
+    // public Verified Takedowns surface.
+    publicDisplayEligible: r.status === 'COMPLETED',
+    statusHistory,
+  };
+}
+
 export const scamIntelligenceApi = {
   async checkIndicator(
     req: IndicatorCheckRequest,
@@ -429,42 +575,15 @@ export const scamIntelligenceApi = {
     );
   },
 
-  // CP-13 — wired to the admin takedown tracker.
+  // CP-13 — wired to the admin takedown tracker (backend TakedownRequest rows).
   async getTakedowns(
     params: PaginationParams & FilterParams = {},
-  ): Promise<ApiResponse<PaginatedResponse<RegistryEntry>>> {
+  ): Promise<ApiResponse<PaginatedResponse<TakedownRecord>>> {
     const { data, error, response } = await backend.GET('/api/v1/intelligence/takedowns');
     if (error || !data) {
       return fail(`HTTP_${response.status}`, response.statusText);
     }
-    const rows = data as unknown as Array<{
-      id: string;
-      status?: string;
-      indicatorValue?: string;
-      indicatorType?: string;
-      createdAt?: string;
-      updatedAt?: string;
-    }>;
-    const items: RegistryEntry[] = rows.map((r) => ({
-      id: r.id,
-      indicator: r.indicatorValue ?? r.id,
-      type: (r.indicatorType ? mapIndicatorType(r.indicatorType) : 'other') as RegistryEntry['type'],
-      scamFamily: 'other' as RegistryEntry['scamFamily'],
-      status: 'verified-malicious' as RegistryEntry['status'],
-      firstSeen: r.createdAt ?? new Date(0).toISOString(),
-      lastSeen: r.updatedAt ?? new Date(0).toISOString(),
-      caseCount: 0,
-      takedownStatus: ((r.status ?? 'pending')
-        .toLowerCase()
-        .replace(/_/g, '-')) as RegistryEntry['takedownStatus'],
-      region: 'global',
-      summary: `Takedown status: ${r.status ?? 'PENDING'}`,
-      commonPhrases: [],
-      relatedIndicators: [],
-      dateVerified: r.updatedAt ?? new Date(0).toISOString(),
-      recommendedAction: '',
-      evidenceSummary: '',
-    }));
+    const items = (data as unknown as BackendTakedownRow[]).map(mapTakedownRecord);
     return ok(paginate(items, params));
   },
 
@@ -482,6 +601,18 @@ export const scamIntelligenceApi = {
       return fail(`HTTP_${response.status}`, response.statusText);
     }
     return ok(data as unknown as IdentityCollisionResult);
+  },
+
+  // CP-13 — internal intelligence submissions = raw scam signals awaiting triage.
+  async getSubmissions(
+    params: PaginationParams & FilterParams = {},
+  ): Promise<ApiResponse<PaginatedResponse<Submission>>> {
+    const { data, error, response } = await backend.GET('/api/v1/intelligence/signals');
+    if (error || !data) {
+      return fail(`HTTP_${response.status}`, response.statusText);
+    }
+    const items = (data as unknown as BackendSignalRow[]).map(mapSubmission);
+    return ok(paginate(items, params));
   },
 };
 
@@ -736,6 +867,8 @@ type BackendAppealRow = {
   submitterEmail: string;
   submitterRelationship: string | null;
   reason: string;
+  requestedChange: string | null;
+  reviewNotes: string | null;
   resolutionAction: string | null;
   reviewedByUserId: string | null;
   reviewedAt: string | null;
@@ -765,8 +898,11 @@ function mapCorrectionAppeal(a: BackendAppealRow): CorrectionAppeal {
     submittedAt: a.createdAt,
     submitterType:
       a.submitterRelationship === 'legal' ? 'legal' : 'subject',
+    submitterName: a.submitterName,
     submitterEmail: a.submitterEmail,
     summary: a.reason,
+    requestedChange: a.requestedChange ?? undefined,
+    reviewNotes: a.reviewNotes ?? undefined,
     resolution: a.resolutionAction ?? undefined,
     resolvedAt: a.reviewedAt ?? undefined,
     resolvedBy: a.reviewedByUserId ?? undefined,
