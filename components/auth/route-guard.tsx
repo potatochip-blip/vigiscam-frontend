@@ -59,14 +59,18 @@ function isPublicRoute(pathname: string): boolean {
   })
 }
 
-// Get the role that owns a given path
-function getPathRole(pathname: string): UserRole | null {
-  for (const [role, prefixes] of Object.entries(roleRoutePrefixes)) {
-    if (prefixes.some(prefix => pathname.startsWith(prefix))) {
-      return role as UserRole
-    }
-  }
-  return null
+// A path is "role-owned" when it sits under any role's area prefix. The SAME
+// prefix can belong to more than one role (e.g. /app/intelligence is shared by
+// investigator + admin), so authorization must ask "does THIS user's role own
+// the path?" — never "which single role owns it?".
+function pathIsRoleOwned(pathname: string): boolean {
+  return Object.values(roleRoutePrefixes).some(prefixes =>
+    prefixes.some(prefix => pathname.startsWith(prefix)),
+  )
+}
+
+function userOwnsPath(pathname: string, role: UserRole): boolean {
+  return (roleRoutePrefixes[role] ?? []).some(prefix => pathname.startsWith(prefix))
 }
 
 interface RouteGuardProps {
@@ -99,11 +103,10 @@ export function RouteGuard({ children }: RouteGuardProps) {
       return
     }
 
-    // Check if user has access to this path
-    const pathRole = getPathRole(pathname)
-    
-    if (pathRole && pathRole !== user.role) {
-      // User is trying to access a route they don't have permission for
+    // Deny only when the path belongs to a role-owned area that THIS user's
+    // role does not own. Shared authenticated pages (e.g. /dashboard) aren't
+    // role-owned, so they stay open to any signed-in user.
+    if (pathIsRoleOwned(pathname) && !userOwnsPath(pathname, user.role)) {
       setAuthorized(false)
       setAccessDenied(true)
       return
