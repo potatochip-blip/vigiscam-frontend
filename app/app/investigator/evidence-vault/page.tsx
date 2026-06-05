@@ -1,43 +1,62 @@
 'use client'
 
+import useSWR from "swr"
 import { PageLayout } from "@/components/dashboard/page-layout"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Archive, FileText, Download, Eye } from "lucide-react"
+import { Loader2, AlertTriangle, FileArchive } from "lucide-react"
+import { backend } from "@/lib/backend"
+import { useAuth } from "@/lib/auth-context"
 
-export default function EvidenceVaultPage() {
+type EvidenceEntry = {
+  id: string
+  type?: string
+  description?: string
+  actor?: string | null
+  createdAt?: string
+}
+
+async function fetchTimeline(): Promise<EvidenceEntry[]> {
+  const { data, error, response } = await backend.GET("/api/v1/evidence/timeline")
+  if (error || !response.ok) throw new Error(`Failed (${response.status})`)
+  return (data as unknown as EvidenceEntry[]) ?? []
+}
+
+export default function InvestigatorEvidenceVaultPage() {
+  const { isAuthenticated } = useAuth()
+  const { data, error, isLoading } = useSWR(isAuthenticated ? "investigator-evidence" : null, fetchTimeline, { revalidateOnFocus: false })
+  const rows = data ?? []
+
   return (
-    <PageLayout role="investigator" title="Evidence Vault" subtitle="Secure evidence storage and chain of custody tracking">
-      <div className="space-y-6">
-        {[
-          { id: "EVD-2024-001", name: "Wire Transfer Records - Case #847", type: "Bank Records", size: "2.4 MB", collected: "Jan 14", chain: "Verified" },
-          { id: "EVD-2024-002", name: "Chat Logs - Romance Scam Ring", type: "Screenshots", size: "156 KB", collected: "Jan 12", chain: "Verified" },
-          { id: "EVD-2024-003", name: "Phone Call Recording - Tech Support", type: "Audio", size: "18.7 MB", collected: "Jan 10", chain: "Verified" },
-          { id: "EVD-2024-004", name: "Device Fingerprints - Network Analysis", type: "Metadata", size: "342 KB", collected: "Jan 8", chain: "Verified" },
-        ].map((evidence) => (
-          <Card key={evidence.id} className="p-6">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h3 className="font-bold text-foreground flex items-center gap-2">
-                  <Archive className="h-4 w-4 text-primary" />
-                  {evidence.name}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-1">{evidence.id}</p>
-              </div>
-              <Badge className="bg-green-100 text-green-700 border-0">{evidence.chain}</Badge>
+    <PageLayout role="investigator" title="Evidence Vault" subtitle="Chain-of-custody evidence timeline">
+      <div className="max-w-7xl mx-auto">
+        <Card className="p-0">
+          {isLoading ? (
+            <div className="flex items-center gap-2 py-16 justify-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading evidence…</div>
+          ) : error ? (
+            <div className="flex items-center gap-2 py-16 justify-center text-red-600"><AlertTriangle className="h-5 w-5" /> Could not load evidence timeline.</div>
+          ) : rows.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-16 text-muted-foreground"><FileArchive className="h-8 w-8" /><p className="font-medium">No evidence entries.</p></div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b bg-muted/30"><tr>{["Type", "Description", "Actor", "Logged"].map((h) => (
+                  <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">{h}</th>
+                ))}</tr></thead>
+                <tbody>
+                  {rows.map((e) => (
+                    <tr key={e.id} className="border-b hover:bg-muted/20">
+                      <td className="px-4 py-3">{e.type && <Badge variant="outline" className="text-xs">{e.type}</Badge>}</td>
+                      <td className="px-4 py-3 max-w-[420px] truncate">{e.description ?? "—"}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">{e.actor ?? "—"}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">{e.createdAt ? new Date(e.createdAt).toLocaleString() : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <div className="grid sm:grid-cols-4 gap-4 pt-4 border-t border-border">
-              <div><p className="text-xs text-muted-foreground">Type</p><p className="text-sm font-medium text-foreground">{evidence.type}</p></div>
-              <div><p className="text-xs text-muted-foreground">Size</p><p className="text-sm font-medium text-foreground">{evidence.size}</p></div>
-              <div><p className="text-xs text-muted-foreground">Collected</p><p className="text-sm font-medium text-foreground">{evidence.collected}</p></div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" className="gap-1"><Eye className="h-3 w-3" /> View</Button>
-                <Button size="sm" variant="outline" className="gap-1"><Download className="h-3 w-3" /> Export</Button>
-              </div>
-            </div>
-          </Card>
-        ))}
+          )}
+        </Card>
       </div>
     </PageLayout>
   )
