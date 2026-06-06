@@ -19,25 +19,8 @@ import {
   Bell,
   Target,
 } from "lucide-react"
-import { mockRegistryEntries } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
-
-// Extract recent alerts from registry (sorted by lastSeen)
-const recentAlerts = mockRegistryEntries
-  .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
-  .slice(0, 10)
-  .map((entry, idx) => ({
-    id: idx,
-    title: `New ${entry.scamFamily} Variant: ${entry.linkedNetwork}`,
-    description: entry.summary,
-    type: entry.scamFamily,
-    indicator: entry.indicator,
-    caseCount: entry.caseCount,
-    region: entry.region,
-    date: entry.lastSeen,
-    severity: entry.status === "verified-malicious" ? "critical" : "high",
-    affectedCount: Math.floor(entry.caseCount * (0.6 + Math.random() * 0.4)),
-  }))
 
 const activeCampaigns = [
   {
@@ -75,6 +58,22 @@ const activeCampaigns = [
 ]
 
 export default function LatestAlertsPage() {
+  const { entries } = useRegistryEntries()
+  const recentAlerts = [...entries]
+    .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
+    .slice(0, 10)
+    .map((entry, idx) => ({
+      id: idx,
+      title: `${entry.scamFamily} indicator: ${entry.indicator}`,
+      description: entry.summary,
+      type: entry.scamFamily,
+      indicator: entry.indicator,
+      caseCount: entry.caseCount,
+      region: entry.region,
+      date: entry.lastSeen,
+      severity: entry.status === "verified-malicious" ? "critical" : "high",
+      affectedCount: entry.caseCount,
+    }))
   return (
     <>
       <Navigation />

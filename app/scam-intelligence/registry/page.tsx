@@ -36,12 +36,12 @@ import {
   Lock,
 } from "lucide-react"
 import {
-  mockRegistryEntries,
   type IndicatorType,
   type ScamFamily,
   indicatorTypeLabels,
   scamFamilyLabels,
 } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { IndicatorTypeBadge } from "@/components/scam-intelligence/indicator-type-badge"
 import { VerificationBadge } from "@/components/scam-intelligence/verification-badge"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
@@ -76,9 +76,10 @@ export default function RegistryPage() {
   const [selectedType, setSelectedType] = useState<IndicatorType | "all">("all")
   const [selectedFamily, setSelectedFamily] = useState<ScamFamily | "all">("all")
   const [sortBy, setSortBy] = useState<"recent" | "cases">("recent")
+  const { entries: mockRegistryEntries, isLoading } = useRegistryEntries(searchTerm || undefined)
 
   const filteredEntries = useMemo(() => {
-    let results = mockRegistryEntries
+    let results = [...mockRegistryEntries]
 
     if (searchTerm) {
       const term = searchTerm.toLowerCase()
@@ -108,7 +109,7 @@ export default function RegistryPage() {
     }
 
     return results
-  }, [searchTerm, selectedType, selectedFamily, sortBy])
+  }, [mockRegistryEntries, searchTerm, selectedType, selectedFamily, sortBy])
 
   return (
     <>
@@ -290,7 +291,9 @@ export default function RegistryPage() {
               </p>
             </div>
 
-            {filteredEntries.length === 0 ? (
+            {isLoading ? (
+              <div className="text-center py-12 text-muted-foreground">Loading the live scam registry…</div>
+            ) : filteredEntries.length === 0 ? (
               <div className="text-center py-12">
                 <AlertTriangle className="h-12 w-12 text-muted-foreground mx-auto mb-4 opacity-50" />
                 <h3 className="text-lg font-semibold mb-2">No indicators found</h3>

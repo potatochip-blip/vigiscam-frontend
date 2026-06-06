@@ -33,7 +33,8 @@ import {
   Clock,
   TrendingUp,
 } from "lucide-react"
-import { mockRegistryEntries } from "@/lib/scam-intelligence-data"
+import type { RegistryEntry } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { VerificationBadge } from "@/components/scam-intelligence/verification-badge"
 import { IndicatorTypeBadge } from "@/components/scam-intelligence/indicator-type-badge"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
@@ -90,7 +91,8 @@ function RiskScoreMeter({ score }: { score: number }) {
 export default function CheckIndicatorPage() {
   const [query, setQuery] = useState("")
   const [activeTab, setActiveTab] = useState<TabType>("phone")
-  const [results, setResults] = useState<typeof mockRegistryEntries | null>(null)
+  const [results, setResults] = useState<RegistryEntry[] | null>(null)
+  const { entries: mockRegistryEntries } = useRegistryEntries(query || undefined)
   const [showDemoResult, setShowDemoResult] = useState(false)
   const [searched, setSearched] = useState(false)
   const [saved, setSaved] = useState(false)

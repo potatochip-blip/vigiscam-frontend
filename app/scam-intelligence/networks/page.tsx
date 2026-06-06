@@ -22,33 +22,33 @@ import {
   Zap,
   Shield,
 } from "lucide-react"
-import { mockRegistryEntries } from "@/lib/scam-intelligence-data"
+import { scamFamilyLabels } from "@/lib/scam-intelligence-data"
+import type { RegistryEntry } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
 
-// Extract unique networks from registry
-const scamNetworks = Array.from(
-  new Map(
-    mockRegistryEntries.map((entry) => [
-      entry.linkedNetwork,
-      {
-        name: entry.linkedNetwork,
-        family: entry.scamFamily,
-        indicators: mockRegistryEntries
-          .filter((e) => e.linkedNetwork === entry.linkedNetwork)
-          .map((e) => e.indicator),
-        cases: mockRegistryEntries
-          .filter((e) => e.linkedNetwork === entry.linkedNetwork)
-          .reduce((sum, e) => sum + e.caseCount, 0),
-        losses: Math.floor(Math.random() * 5000000 + 500000),
-        firstSeen: mockRegistryEntries
-          .filter((e) => e.linkedNetwork === entry.linkedNetwork)
-          .sort((a, b) => new Date(a.firstSeen).getTime() - new Date(b.firstSeen).getTime())[0]?.firstSeen,
-        status: Math.random() > 0.4 ? "active" : "disrupted",
-        region: mockRegistryEntries.filter((e) => e.linkedNetwork === entry.linkedNetwork)[0]?.region,
-      },
-    ])
-  ).values()
-)
+/**
+ * Group the live public registry into scam "networks" by scam family — the
+ * only relationship the privacy-safe public API exposes. Victim-loss figures
+ * are intentionally NOT published by the backend, so we never fabricate them.
+ */
+function buildNetworks(entries: RegistryEntry[]) {
+  const byFamily = new Map<string, RegistryEntry[]>()
+  for (const e of entries) {
+    const arr = byFamily.get(e.scamFamily) ?? []
+    arr.push(e)
+    byFamily.set(e.scamFamily, arr)
+  }
+  return Array.from(byFamily.entries()).map(([family, group]) => ({
+    name: scamFamilyLabels[family as keyof typeof scamFamilyLabels] ?? family,
+    family,
+    indicators: group.map((e) => e.indicator),
+    cases: group.reduce((sum, e) => sum + e.caseCount, 0),
+    firstSeen: [...group].sort((a, b) => new Date(a.firstSeen).getTime() - new Date(b.firstSeen).getTime())[0]?.firstSeen,
+    status: group.some((e) => e.takedownStatus === "confirmed") ? "disrupted" : "active",
+    region: group[0]?.region,
+  }))
+}
 
 const riskColors: Record<string, string> = {
   "tech-support": "bg-red-50 border-red-200",
@@ -78,6 +78,8 @@ const riskTextColors: Record<string, string> = {
 
 export default function NetworksPage() {
   const [selectedFamily, setSelectedFamily] = useState<string | null>(null)
+  const { entries } = useRegistryEntries()
+  const scamNetworks = buildNetworks(entries)
 
   const filteredNetworks = selectedFamily
     ? scamNetworks.filter((n) => n.family === selectedFamily)
@@ -204,10 +206,8 @@ export default function NetworksPage() {
                       <div>
                         <div className="space-y-3">
                           <div>
-                            <p className="text-xs text-muted-foreground mb-1">Total Losses</p>
-                            <p className="font-bold text-lg">
-                              ${(network.losses / 1000000).toFixed(1)}M
-                            </p>
+                            <p className="text-xs text-muted-foreground mb-1">Reported Cases</p>
+                            <p className="font-bold text-lg">{network.cases.toLocaleString()}</p>
                           </div>
                           <div>
                             <p className="text-xs text-muted-foreground mb-1">Status</p>

@@ -21,45 +21,38 @@ import {
   ArrowRight,
   Filter,
 } from "lucide-react"
-import { mockRegistryEntries } from "@/lib/scam-intelligence-data"
+import type { RegistryEntry } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
 import { useState } from "react"
 
-// Extract confirmed takedowns
-const confirmedTakedowns = mockRegistryEntries
-  .filter((entry) => entry.takedownStatus === "confirmed")
-  .map((entry, idx) => ({
-    id: idx,
-    indicator: entry.indicator,
-    type: entry.type,
-    network: entry.linkedNetwork,
-    family: entry.scamFamily,
-    dateRequested: new Date(entry.firstSeen),
-    dateConfirmed: new Date(new Date(entry.firstSeen).getTime() + Math.random() * 200 * 24 * 60 * 60 * 1000),
-    reason: "Verified phishing and credential harvesting",
-    action: `Domain seized by ${Math.random() > 0.5 ? "ICANN" : "hosting provider"}`,
-    preventedLosses: Math.floor(Math.random() * 5000000 + 100000),
-  }))
-  .sort((a, b) => b.dateConfirmed.getTime() - a.dateConfirmed.getTime())
-
-const inProgressTakedowns = mockRegistryEntries
-  .filter((entry) => entry.takedownStatus === "in-progress")
-  .map((entry, idx) => ({
-    id: `ip-${idx}`,
-    indicator: entry.indicator,
-    type: entry.type,
-    network: entry.linkedNetwork,
-    family: entry.scamFamily,
-    dateRequested: new Date(entry.firstSeen),
-    daysInProgress: Math.floor(Math.random() * 180 + 1),
-    provider: "Cloudflare / Google",
-    status: "Awaiting provider response",
-    caseCount: entry.caseCount,
-  }))
-  .slice(0, 5)
+/**
+ * Confirmed takedowns derived from the live public registry. Dates come from
+ * the registry's real first/last-seen fields; the public API does not publish
+ * provider names or prevented-loss figures, so those are not fabricated.
+ */
+function buildConfirmed(entries: RegistryEntry[]) {
+  return entries
+    .filter((entry) => entry.takedownStatus === "confirmed")
+    .map((entry, idx) => ({
+      id: idx,
+      indicator: entry.indicator,
+      type: entry.type,
+      network: entry.linkedNetwork,
+      family: entry.scamFamily,
+      dateRequested: new Date(entry.firstSeen || entry.lastSeen || Date.now()),
+      dateConfirmed: new Date(entry.dateVerified || entry.lastSeen || Date.now()),
+      reason: entry.summary,
+      action: "Listed in the public scam registry",
+    }))
+    .sort((a, b) => b.dateConfirmed.getTime() - a.dateConfirmed.getTime())
+}
 
 export default function TakedownsPage() {
   const [viewMode, setViewMode] = useState<"confirmed" | "progress">("confirmed")
+  const { entries } = useRegistryEntries()
+  const confirmedTakedowns = buildConfirmed(entries)
+  const inProgressTakedowns: { id: string; indicator: string; type: string; network: string; family: string; dateRequested: Date; daysInProgress: number; provider: string; status: string; caseCount: number }[] = []
 
   return (
     <>
@@ -204,14 +197,8 @@ export default function TakedownsPage() {
                           <div>
                             <p className="text-xs text-muted-foreground">Action Taken</p>
                             <p className="text-sm font-medium mt-1">{takedown.action}</p>
-                            <p className="text-xs text-muted-foreground mt-2">
+                            <p className="text-xs text-muted-foreground mt-2 line-clamp-3">
                               {takedown.reason}
-                            </p>
-                          </div>
-                          <div className="mt-3 p-3 bg-green-100 rounded">
-                            <p className="text-xs text-muted-foreground">Losses Prevented</p>
-                            <p className="text-lg font-bold text-green-700">
-                              ${(takedown.preventedLosses / 1000000).toFixed(1)}M
                             </p>
                           </div>
                         </div>

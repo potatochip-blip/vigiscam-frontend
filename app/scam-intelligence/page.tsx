@@ -24,7 +24,7 @@ import {
   Target,
   Smartphone,
 } from "lucide-react"
-import { mockRegistryEntries } from "@/lib/scam-intelligence-data"
+import { useRegistryEntries } from "@/lib/scam-intelligence-live"
 import { VigiscamLogo } from "@/components/vigiscam-logo"
 
 const stats = [
@@ -53,15 +53,6 @@ const stats = [
     color: "text-orange-600",
   },
 ]
-
-const recentIndicators = mockRegistryEntries.slice(0, 5).map((entry) => ({
-  indicator: entry.indicator,
-  type: entry.type,
-  family: entry.scamFamily,
-  status: entry.status,
-  cases: entry.caseCount,
-  dateAdded: entry.lastSeen,
-}))
 
 const features = [
   {
@@ -109,6 +100,15 @@ const features = [
 ]
 
 export default function ScamIntelligencePage() {
+  const { entries } = useRegistryEntries()
+  const recentIndicators = entries.slice(0, 5).map((entry) => ({
+    indicator: entry.indicator,
+    type: entry.type,
+    family: entry.scamFamily,
+    status: entry.status,
+    cases: entry.caseCount,
+    dateAdded: entry.lastSeen,
+  }))
   return (
     <>
       <Navigation />
